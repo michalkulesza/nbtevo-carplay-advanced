@@ -1,0 +1,2 @@
+# The QNX head unit shell (ksh/sh) rejects CRLF; keep shell scripts LF on every platform, Windows checkouts included.
+*.sh text eol=lf
