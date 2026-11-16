@@ -116,6 +116,8 @@ ID5_1803-510-1749MA_Build_71     scan                edb7d483662c456de791a460e18
 ID5_1703-490-1650ZD_Build_139    HmiMain3D           81343a9349384b790f40510bc6ca6b89aa5efb6d3253fad0e590f296b5e348fb
 ID5_1703-490-1650ZD_Build_139    libconn_carplay.so  062a20f49fc4f4bab1a7e3b9a5910d12ba8e6b70895a434291c20d83ee0a5f85
 ID5_1703-490-1650ZD_Build_139    scan                28f623d87c3c934d058fb49b1d2b5f04cbfa76f574f2dbcf78814b5276acde6c
+ID5_1811-490-1827D_Build_34      HmiMain3D           31026b3164be213d574bc41b1b69b3e7e1dfe1aef5ae00d9fbcc6790e82b6768
+ID5_1811-490-1827D_Build_34      libconn_carplay.so  062a20f49fc4f4bab1a7e3b9a5910d12ba8e6b70895a434291c20d83ee0a5f85
 EOF
 }
 # supported_as <sha256 of HmiMain3D> <sha256 of libconn_carplay.so>: prints the matching software, nothing if none
@@ -410,7 +412,7 @@ usage() {
 CarPlay Advanced Settings installer 1.1.0 (NBT Evo iDrive 5 / iDrive 6)
 Usage: sh carplay-advanced.sh install|uninstall|status|restart [options]
   --host user@address   From a computer: the head unit to connect to (default root@169.254.199.99)
-  --full                Install the full plugin (menu, HMI patches, fullscreen, knob/touchpad, HUD). Default on iDrive 5.
+  --full               Install the full plugin (menu, HMI patches, fullscreen, knob/touchpad, HUD). Default on iDrive 5.
   --hud                 Install turn-by-turn directions (from the next CarPlay connection, no reboot) and the HUD-only menu
                         (after a restart, on cars coded for apps); no HMI patch. Default on iDrive 6.
   --payload <folder>    On the head unit: the folder with the plugin files (a computer uploads plugin/ itself)
