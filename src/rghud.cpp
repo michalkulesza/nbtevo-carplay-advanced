@@ -6,7 +6,8 @@
 //   * the same code as the plugin's: src/hud.h (its own MOST client "CarPlayHud" through libsys_dsi_colibry, the iPhone's
 //     guidance from the routeguidance file this library writes, the BMW navigation's priority, the test switches); a MOST client in a
 //     process of its own is what NBT-AAD's daemon does too.
-//   * rghook.c calls rgh_kick() after every route-guidance message; the first starts hud.h (its threads; mm-ipod's never wait on MOST).
+//   * rghook.c calls rgh_kick() when the iPhone's link is up and after every route-guidance message; the first starts hud.h (its
+//     threads; mm-ipod's never wait on MOST), so its test channel and "HUD debug log" work with no route too.
 //     "CarPlay directions in HUD" is on by being here: the mm-ipod wrapper preloads this library only while hud_guidance is set.
 //   * mm-ipod lives for one CarPlay session: while hud.h shows a picture, RG_MOST_MARKER holds our pid, and the watcher
 //     (rg_watch_once, rghook.c) has libcpprobe.so clear the HUDTerminal if mm-ipod ended with it still up.

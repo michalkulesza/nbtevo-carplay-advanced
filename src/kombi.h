@@ -1048,6 +1048,7 @@ struct Man {
   char dist[16];
   Lanes lanes;
   bool hasStep;
+  bool roadFb;  // the street is the car's current road (the maneuver names none): a change of it alone redraws nothing
   u32 metres;
 };
 
@@ -1059,13 +1060,97 @@ inline void copyText(char *d, u32 cap, const char *s) {
   }
   d[i] = 0;
 }
-// the iPhone's guidance (rgview.h) -> the KOMBI's maneuver: direction, street (never "": the template's own street would stay),
-// distance number + unit from the iPhone's text ("450 m"; without text whole metres, "-" with nothing), lanes (none rather than a
-// lane the KOMBI cannot draw)
+// The street's length on the KOMBI: the cluster takes long names, but the windscreen HUD's larger font cuts them off at the right
+// edge. g_roadMax (rgkombi.cpp: the file kombi_road_max, 8..60) in characters; 0 = kRoadMax.
+const u32 kRoadMax = 22;
+u32 g_roadMax = 0;
+inline bool sameWord(const char *w, u32 n, const char *s) {
+  u32 i = 0;
+  while (i < n && s[i] == w[i])
+    i++;
+  return i == n && !s[i];
+}
+inline u32 utf8Chars(const char *s, u32 n) {
+  u32 c = 0;
+  for (u32 i = 0; i < n; i++)
+    c += ((u8)s[i] & 0xc0) != 0x80;
+  return c;
+}
+// A street made to fit in max characters (UTF-8). One that fits is kept as it is; a longer one gets common English words in their
+// short forms (Street St, North N, ...), then trailing words dropped while it is still longer, one long word cut at a character.
+// out holds cap bytes.
+inline void shortRoad(const char *in, char *out, u32 cap, u32 max) {
+  static const char *const kWords[][2] = {
+    { "Street", "St" },     { "Avenue", "Ave" },   { "Boulevard", "Blvd" }, { "Road", "Rd" },         { "Drive", "Dr" },
+    { "Highway", "Hwy" },   { "Parkway", "Pkwy" }, { "Freeway", "Fwy" },    { "Expressway", "Expy" }, { "Turnpike", "Tpke" },
+    { "Lane", "Ln" },       { "Court", "Ct" },     { "Place", "Pl" },       { "Circle", "Cir" },      { "Route", "Rt" },
+    { "North", "N" },       { "South", "S" },      { "East", "E" },         { "West", "W" },          { "Northbound", "NB" },
+    { "Southbound", "SB" }, { "Eastbound", "EB" }, { "Westbound", "WB" },   { "Saint", "St" },        { "Mount", "Mt" },
+    { "Center", "Ctr" },    { "Junction", "Jct" },
+  };
+  char t[128];
+  u32 n = 0, ends[24], nw = 0;
+  const char *p = in;
+  while (*p == ' ')
+    p++;
+  while (p[n] && p[n] != '\n')
+    n++;
+  while (n && p[n - 1] == ' ')
+    n--;
+  bool fits = utf8Chars(p, n) <= max && n < cap;
+  n = 0;
+  while (nw < 24) {
+    while (*p == ' ')
+      p++;
+    if (!*p || *p == '\n')
+      break;
+    const char *w = p;
+    u32 wl = 0;
+    while (w[wl] && w[wl] != ' ' && w[wl] != '\n')
+      wl++;
+    p += wl;
+    for (u32 i = 0; i < sizeof kWords / sizeof kWords[0] && !fits; i++)
+      if (sameWord(w, wl, kWords[i][0])) {
+        w = kWords[i][1];
+        for (wl = 0; w[wl];)
+          wl++;
+        break;
+      }
+    if (n && n + 1 < sizeof t)
+      t[n++] = ' ';
+    for (u32 q = 0; q < wl && n + 1 < sizeof t; q++)
+      t[n++] = w[q];
+    ends[nw++] = n;
+  }
+  t[n] = 0;
+  u32 keep = nw;
+  while (keep > 1 && utf8Chars(t, ends[keep - 1]) > max)
+    keep--;
+  u32 len = nw ? ends[keep - 1] : 0, c = 0, i = 0;
+  for (; i < len; i++) {  // one word longer than max: cut before the character max + 1
+    if (((u8)t[i] & 0xc0) != 0x80 && ++c > max)
+      break;
+  }
+  len = i < cap ? i : cap - 1;
+  while (len && ((u8)t[len] & 0xc0) == 0x80)  // never half a character
+    len--;
+  for (i = 0; i < len; i++)
+    out[i] = t[i];
+  out[len] = 0;
+}
+// the iPhone's guidance (rgview.h) -> the KOMBI's maneuver: direction, street (shortRoad; never "": the template's own street would
+// stay; a highway exit's number in front), distance number + unit from the iPhone's text ("450 m"; without text whole metres, "0 m"
+// with nothing), lanes (none rather than a lane the KOMBI cannot draw)
 inline void manOf(const rg_view &v, Man &m) {
   memset(&m, 0, sizeof m);
   m.dir = direction(v.type, v.angle, v.side);
-  copyText(m.road, sizeof m.road, v.road[0] ? v.road : " ");
+  m.roadFb = v.roadfb != 0;
+  u32 max = g_roadMax ? g_roadMax : kRoadMax;
+  {
+    char r[96];
+    shortRoad(v.road, r, sizeof r, max);
+    copyText(m.road, sizeof m.road, r[0] ? r : " ");
+  }
   char num[16] = "", unit[8] = "";
   const char *t = v.dist_s;
   while (*t == ' ')
@@ -1093,9 +1178,34 @@ inline void manOf(const rg_view &v, Man &m) {
     num[k] = 0;
     m.unit = kUnitM;
   }
-  copyText(m.dist, sizeof m.dist, num[0] ? num : "-");
-  if (m.unit < 0 || !num[0])
+  if (num[0] < '0' || num[0] > '9') {  // no distance (the arrival, a start marker): "0 m" (with "-" the cluster showed "-m")
+    num[0] = '0';
+    num[1] = 0;
     m.unit = kUnitM;
+  }
+  copyText(m.dist, sizeof m.dist, num);
+  if (m.unit < 0)
+    m.unit = kUnitM;
+  if (v.exitno[0] && (m.dir == kHwyOutLeft || m.dir == kHwyOutRight)) {  // "Exit 23B  I-95 N": the number, then the road
+    char t[96];
+    u32 k = 0;
+    for (const char *q = "Exit "; *q; q++)
+      t[k++] = *q;
+    for (const char *q = v.exitno; *q && k < 20; q++)
+      t[k++] = *q;
+    if (!v.roadfb && v.road[0] && v.road[0] != ' ' && max > k + 6) {  // the maneuver's road only, not the one the car is on
+      char r[96];
+      shortRoad(v.road, r, sizeof t - k - 2, max - k - 2);
+      if (r[0]) {
+        t[k++] = ' ';
+        t[k++] = ' ';
+        for (const char *q = r; *q && k + 1 < sizeof t; q++)
+          t[k++] = *q;
+      }
+    }
+    t[k] = 0;
+    copyText(m.road, sizeof m.road, t);
+  }
   m.hasStep = true;
   m.metres = v.dist;
   if (v.nl && v.nl <= kLaneMax) {
@@ -1271,7 +1381,9 @@ struct Output {
     if (retryAt && (int)(now - retryAt) < 0)
       return;
     retryAt = 0;
-    bool same = shown && m.dir == lastDir && eq(m.road, lastRoad);
+    // A new street alone redraws the whole graph (the cluster blinks): only the maneuver's own street does, and not within 4 s of
+    // the last graph; the car's current road (the maneuver names none) changes as it drives and redraws nothing.
+    bool same = shown && m.dir == lastDir && (eq(m.road, lastRoad) || m.roadFb || now - tGraph < 4000);
     if (!same || (!sameLanes(m.lanes, lastLanes) && now - tGraph >= 3000)) {
       if (showManeuver(m, now) && g_debug && g_debug()) {
         char d[24];

@@ -37,7 +37,7 @@ The menu:
 Media/Radio > CarPlay Advanced Settings
   Full-screen CarPlay
   CarPlay directions in HUD
-  HUD effects >        Fill toward the turn / Blink near the turn / Effect colour > (Orange, Grey, White)
+  HUD effects >        Fill toward the turn / Blink near the turn / Effect colour > (Orange, Grey, White) / HUD debug log
   iDrive control >     Enable knob tilts
                        Touchpad >   Enable touchpad / Tap touchpad as click / Touchpad sensitivity > (Low, Medium, High)
                                     / Two fingers tap to back
@@ -51,7 +51,7 @@ puts on the turn-by-turn part by default (`--hud`), with a **HUD-only menu** in 
 ```
 Media/Radio > CarPlay Advanced Settings
   CarPlay directions in HUD
-  HUD effects >        Fill toward the turn / Blink near the turn / Effect colour > (Orange, Grey, White)
+  HUD effects >        Fill toward the turn / Blink near the turn / Effect colour > (Orange, Grey, White) / HUD debug log
 ```
 
 It changes nothing in the HMI itself, and its switches apply at the next CarPlay connection (no restart). The HMI shows it only when the
@@ -63,11 +63,20 @@ instead (not tried on iDrive 6 in a car).
 The plugin reads the guidance the iPhone sends to the car (the maneuver, the distance, the street, the lanes) and shows it where the
 BMW navigation would. How it gets there depends on the car's cluster; the installer finds out which one the car has.
 
-| | F-series (MOST cluster, e.g. MINI F54/F55/F56) | G-series and J29 (Ethernet KOMBI) |
+| | F-series (MOST cluster, e.g. MINI F54/F55/F56, BMW F30/F31 digital cluster) | G-series and J29 (Ethernet KOMBI) |
 |---|---|---|
 | Who draws | **We do.** The plugin draws every picture itself, polygon by polygon, on the cluster's `HUDTerminal` over MOST. | **The car does.** The plugin sends the route data to the KOMBI's own guidance service (SOME/IP), and the cluster and the HUD draw it with their own graphics. |
 | Pictures | Mapbox's maneuver and lane drawings, turned into HUD polygons (previews below). | The car's own arrows, distance and lane row. |
-| Status | **Tested in a car** (MINI F54, HMI 1703): pictures, distance, street, HUD effects, lanes. | **Not tested in a car.** A port of NBT-AAD's car-verified KOMBI stack (see Credits), checked against a fake KOMBI only. |
+| Status | **Tested in a car.** MINI F54 (HMI 1703): pictures, distance, street, HUD effects, lanes. BMW F30/F31 digital cluster (NBT Evo ID5, PR #13): arrow and distance with the `hud_box` / `hud_hide` switches set by hand (its picture buffer is 126×77 and it shows its own distance bar); the plugin now fits the box and hides the bar itself (not yet tried there). | **Not tested in a car.** A port of NBT-AAD's car-verified KOMBI stack (see Credits), checked against a fake KOMBI only. |
+
+**On the MOST cluster** the plugin takes the cluster's own handles from the BMW navigation's set-up at start (they differ between
+clusters: an F25 X3 has its texts elsewhere than a MINI), asks the cluster how big its picture area is and fits the arrow into it,
+and also draws on a second HUDTerminal (82/02) when the navigation uses one. Distances keep their decimal point ("1.5 km"). Seen in
+a car so far only on the MINI F54 (the F30/F31 and F25 worked with the same settings made by hand); for other clusters the settings files `hud_box`, `hud_hide`, `hud_inst` and `hud_text_handles`
+(AGENTS.md) set things by hand, and `sh carplay-advanced.sh hud-probe` shows what the cluster has.
+
+**On the KOMBI** the street is shortened to 22 characters (the windscreen HUD cuts longer names off), a highway exit shows its
+number ("Exit 23B  I-95 N"), and a maneuver without a distance shows "0 m".
 
 **HUD effects** (MOST, menu *HUD effects*): the maneuver fills up with the effect colour toward the turn and / or blinks near it. The
 start marker never fills or blinks.
@@ -90,6 +99,7 @@ hashes:
 |---|---|---|
 | 006_006_006 | ID5_1703-490-1650ZD Build 139 (MINI F54, 8.8") | tested in a car |
 | 006_017_006 | ID5_1803-510-1749MA Build 71 | not tried in a car yet |
+| NBTevo_ID5_1607_Release | ID5_1607-490-1610T Build 153 (BMW F20) | mapped by a contributor from a car's HMI; no Full-screen CarPlay; not tried in a car yet |
 
 Before it changes anything, the installer reads the head unit's HMI and CarPlay library and compares their hashes with the list
 above. On other iDrive 5 software it **searches the HMI for the places the plugin uses** (about 20 s on your computer). If it finds
@@ -142,6 +152,9 @@ sh carplay-advanced.sh install --dry-run      # every check and the plan, nothin
 sh carplay-advanced.sh status                 # what is installed, the links, the backups
 sh carplay-advanced.sh uninstall              # back to the original state (--keep-config keeps your switches)
 sh carplay-advanced.sh restart                # restart the head unit
+sh carplay-advanced.sh hud-probe              # HUD shows nothing? asks the cluster and the HUD what they have (~40 s, changes
+                                              # nothing; needs "CarPlay directions in HUD" on), then shows five test pictures
+                                              # and asks which ones you see; saved in BACKUP/ for an issue
 ```
 
 Options: `--hud` / `--full` (turn-by-turn only, or everything), `--cluster most|kombi|both` (where the directions go, instead of
@@ -210,6 +223,11 @@ such agents as much as for people, and `.claude/skills/` holds two task guides t
   [JayJay3071/nbt-android-auto](https://github.com/JayJay3071/nbt-android-auto),
   [luka-dev/mib2q-carplay-rgi](https://github.com/luka-dev/mib2q-carplay-rgi) and [f-io/LIVI](https://github.com/f-io/LIVI):
   findings and formats that helped (AGENTS.md, References).
+- **Contributors**: [ghackt](https://github.com/ghackt) (the 1.2.x fixes from the issues, ported into 1.3.0: the 1607 build, the
+  exit number, the start marker after a reroute, the KOMBI street length, the second `--hud` install, the restart after install),
+  [FreZZZeR](https://github.com/FreZZZeR) (`hud_box` / `hud_hide`, PR #13), and the owners who tested in their cars and sent logs,
+  handle maps and files: cfrogjump (F25), mrmilankd (F31), judirado-byte (F32), Barlows (F20), itstheodor (F36), tangshijiao and
+  Sir-Gordon (6WB), ONSS12.
 
 ## Feedback
 

@@ -16,6 +16,7 @@ TEXTS = {
     22: 'Orange',
     23: 'Grey',
     24: 'White',
+    25: 'HUD debug log',
     9: 'iDrive control',
     3: 'Enable knob tilts',
     10: 'Touchpad',

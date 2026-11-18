@@ -37,6 +37,7 @@ int main(int argc, char **argv) {
       int have, n = 0; sscanf(line + 5, "%d %d %d %u %n", &have, &m.dir, &m.unit, &m.metres, &n);
       m.hasStep = true;
       char *rest = line + 5 + n, *bar1 = strchr(rest, '|'), *bar2 = bar1 ? strchr(bar1 + 1, '|') : 0;
+      if (!strncmp(rest, "fb:", 3)) { m.roadFb = true; rest += 3; }   // the street is the car's current road
       if (bar1) *bar1 = 0; if (bar2) *bar2 = 0;
       snprintf(m.road, sizeof m.road, "%s", rest); if (bar1) snprintf(m.dist, sizeof m.dist, "%s", bar1 + 1);
       if (bar2) for (char *q = bar2 + 1; *q && m.lanes.n < 8;) {
@@ -50,10 +51,12 @@ int main(int argc, char **argv) {
     } else if (!strncmp(line, "map ", 4)) {
       unsigned t; int a; unsigned s; sscanf(line + 4, "%u %d %u", &t, &a, &s); printf("MAP %d\n", kombi::direction(t, a, s)); fflush(stdout);
     } else if (!strncmp(line, "lane ", 5)) { printf("LANE %d\n", kombi::laneArrow(atoi(line + 5))); fflush(stdout); }
-    else if (!strncmp(line, "man ", 4)) {             // man type angle side metres units <dist text>|<road>|<status/hl/a,a;...>
-      static rg_view v; memset(&v, 0, sizeof v); int n = 0;
-      sscanf(line + 4, "%u %d %u %u %u %n", &v.type, &v.angle, &v.side, &v.dist, &v.units, &n);
-      char *rest = line + 4 + n, *b1 = strchr(rest, '|'), *b2 = b1 ? strchr(b1 + 1, '|') : 0;
+    else if (!strncmp(line, "man ", 4)) {   // man [x:<exit number>] [fb] type angle side metres units <dist text>|<road>|<status/hl/a,a;...>
+      static rg_view v; memset(&v, 0, sizeof v); int n = 0; char *s = line + 4;
+      if (!strncmp(s, "x:", 2)) { int k = 0; s += 2; while (*s && *s != ' ' && k < 15) v.exitno[k++] = *s++; while (*s == ' ') s++; }
+      if (!strncmp(s, "fb ", 3)) { v.roadfb = 1; s += 3; }
+      sscanf(s, "%u %d %u %u %u %n", &v.type, &v.angle, &v.side, &v.dist, &v.units, &n);
+      char *rest = s + n, *b1 = strchr(rest, '|'), *b2 = b1 ? strchr(b1 + 1, '|') : 0;
       if (b1) *b1 = 0; if (b2) *b2 = 0;
       snprintf(v.dist_s, sizeof v.dist_s, "%s", rest); if (b1) snprintf(v.road, sizeof v.road, "%s", b1 + 1);
       if (b2) for (char *q = b2 + 1; *q && v.nl < 8;) {
@@ -66,6 +69,7 @@ int main(int argc, char **argv) {
       for (unsigned i = 0; i < m.lanes.n; i++) printf(" %d:%d", m.lanes.kind[i], m.lanes.arrow[i]);
       printf("\n"); fflush(stdout);
     }
+    else if (!strncmp(line, "roadmax ", 8)) { kombi::g_roadMax = (unsigned)atoi(line + 8); printf("ROADMAX ok\n"); fflush(stdout); }
     else if (!strncmp(line, "unit ", 5)) {
       unsigned u; char t[8] = ""; sscanf(line + 5, "%u %7s", &u, t); printf("UNIT %d %d\n", kombi::unitOf(u), kombi::unitOfText(t)); fflush(stdout);
     }
@@ -251,6 +255,18 @@ class KombiTest(Harness, unittest.TestCase):
         self.tick(have=0)
         self.assertEqual(self.k.take(), [])
 
+    def test_street_change_redraws_only_the_maneuvers_own(self):
+        self.tick(d=6, road='Main Street', dist='450', now=1000)
+        self.assertEqual(len(self.k.take()), 97)
+        self.tick(d=6, road='fb:Elm Road', dist='400', now=6000)      # the car's current road changed: the distance only
+        self.assertEqual([r['method'] for r in self.k.take()], [0xA])
+        self.tick(d=6, road='Oak Road', dist='350', now=7000)         # the maneuver's own street: the in-place update
+        self.assertEqual(len(self.k.take()), 9)
+        self.tick(d=6, road='Pine Road', dist='300', now=8000)        # again within 4 s of it: the distance only, for now
+        self.assertEqual([r['method'] for r in self.k.take()], [0xA])
+        self.tick(d=6, road='Pine Road', dist='300', now=11000)       # 4 s on: drawn
+        self.assertEqual(len(self.k.take()), 9)
+
     def test_lanes_and_position_feed(self):
         self.tick(d=2, lanes='2:6,1:1,1:1,2:7', metres=300, now=1000)
         reqs = self.k.take()
@@ -350,9 +366,32 @@ class ManTest(Harness, unittest.TestCase):
         self.assertEqual(self.man('3 0 0 800 4 0.5 mi||'), '1 1 [0.5] [ ] 0')                 # no street: a space, never ""
         self.assertEqual(self.man('3 0 0 300 4 1000||'), '1 5 [1000] [ ] 0')                 # text without unit: the iPhone's units (ft)
         self.assertEqual(self.man('3 0 0 75 2 ||'), '1 3 [75] [ ] 0')                        # no text: whole metres
-        self.assertEqual(self.man('3 0 0 0 2 ||'), '1 3 [-] [ ] 0')                          # nothing at all
+        self.assertEqual(self.man('3 0 0 0 2 ||'), '1 3 [0] [ ] 0')                          # nothing at all: "0 m" (not "-m")
+        self.assertEqual(self.man('10 0 0 0 2 0 m||'), '10 3 [0] [ ] 0')
         self.assertEqual(self.man('2 0 0 300 2 300 m|A1|0/1000/-90;1/1000/0;2/90/0,90'), '7 3 [300] [A1] 3 2:6 1:1 1:7')
         self.assertEqual(self.man('2 0 0 300 2 300 m|A1|1/1000/'), '7 3 [300] [A1] 0')       # a lane with no direction: no row
+
+    def test_street_fits(self):
+        # 22 characters by default (the windscreen HUD's font): a name that fits stays as it is
+        self.assertEqual(self.man('1 0 0 450 2 450 m|Main Street|'), '6 3 [450] [Main Street] 0')
+        self.assertEqual(self.man('1 0 0 450 2 450 m|Twenty-Two Characters!|'), '6 3 [450] [Twenty-Two Characters!] 0')
+        # longer: short forms, then trailing words dropped, then one word cut at a character (UTF-8)
+        self.assertEqual(self.man('1 0 0 450 2 450 m|North Martin Luther King Junior Boulevard|'),
+                         '6 3 [450] [N Martin Luther King] 0')
+        self.assertEqual(self.man('1 0 0 450 2 450 m|Fifth Avenue South Westbound|'), '6 3 [450] [Fifth Ave S WB] 0')
+        self.assertEqual(self.man('1 0 0 450 2 450 m|Großherzog-Friedrich-Straße Nord|'), '6 3 [450] [Großherzog-Friedrich-S] 0')
+        self.cmd('roadmax 45', 'ROADMAX')                                                      # kombi_road_max
+        self.assertEqual(self.man('1 0 0 450 2 450 m|North Martin Luther King Junior Boulevard|'),
+                         '6 3 [450] [North Martin Luther King Junior Boulevard] 0')
+        self.cmd('roadmax 0', 'ROADMAX')
+
+    def test_exit_number(self):
+        # a highway exit: its number in front of the road; other maneuvers ignore it
+        self.assertEqual(self.man('x:23B 23 0 0 800 2 800 m|I-95 North|'), '29 3 [800] [Exit 23B  I-95 North] 0')
+        self.assertEqual(self.man('x:23B 8 -30 0 800 2 800 m|I-95|'), '28 3 [800] [Exit 23B  I-95] 0')
+        self.assertEqual(self.man('x:23B fb 23 0 0 800 2 800 m|Interstate 95|'), '29 3 [800] [Exit 23B] 0')  # the current road
+        self.assertEqual(self.man('x:23B 23 0 0 800 2 800 m||'), '29 3 [800] [Exit 23B] 0')
+        self.assertEqual(self.man('x:12 1 0 0 800 2 800 m|Main Street|'), '6 3 [800] [Main Street] 0')
 
 
 class ProbeTest(unittest.TestCase):

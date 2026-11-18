@@ -1,0 +1,110 @@
+{
+ "hmi": "1607-490 Build 153",
+ "name": "carplay_tilt_1607",
+ "what": "carplay_tilt (see tilt_1703.json) for HMI ID5_1607-490-1610T Build 153 (NBTevo_ID5_1607_Release, BMW F20, read from a car; issue #8). CCarPlayActivity::handleControllerInput is at 0x8b568c there; every patched place has the same instructions at the same distances as in 1703 Build 139 (only the proxy offset in the send call's argument setup differs: +0x4d64), so the new words are 1703's, the key filter's branch keeping its own offset.",
+ "how": [
+  "0x8b56f4..0x8b56fc: the key filter becomes 9..14 (bhi to the same exit 0x8b59a8)",
+  "0x8b58f0: tilt left no longer sets the Back field",
+  "0x8b59c0: skips the trace printf: b 0x8b58dc",
+  "0x8b589c..0x8b58cc: zero the four direction words, store \"pressed\" in the one of key-9, Voice field as before, b 0x8b593c (the send call)",
+  "0x8b5918: b 0x8b589c instead of the original argument setup",
+  "Mapped by matching handleControllerInput with 1703 Build 139 (the installer's tA, tB, tC windows; tB with the proxy immediates masked) and checked instruction by instruction."
+ ],
+ "words": [
+  {
+   "addr": "0x8b56f4",
+   "orig": "e355000e",
+   "new": "e245c009"
+  },
+  {
+   "addr": "0x8b56f8",
+   "orig": "1355000d",
+   "new": "e35c0005"
+  },
+  {
+   "addr": "0x8b56fc",
+   "orig": "1a0000a9",
+   "new": "8a0000a9"
+  },
+  {
+   "addr": "0x8b589c",
+   "orig": "e59f0144",
+   "new": "e3a0c000"
+  },
+  {
+   "addr": "0x8b58a0",
+   "orig": "e1a01005",
+   "new": "e58dc000"
+  },
+  {
+   "addr": "0x8b58a4",
+   "orig": "e1a02009",
+   "new": "e58dc004"
+  },
+  {
+   "addr": "0x8b58a8",
+   "orig": "e1a0300a",
+   "new": "e58dc008"
+  },
+  {
+   "addr": "0x8b58ac",
+   "orig": "e58d8000",
+   "new": "e58dc00c"
+  },
+  {
+   "addr": "0x8b58b0",
+   "orig": "ebe5767e",
+   "new": "e245c009"
+  },
+  {
+   "addr": "0x8b58b4",
+   "orig": "e51b002c",
+   "new": "e35c0003"
+  },
+  {
+   "addr": "0x8b58b8",
+   "orig": "e5d03014",
+   "new": "978d810c"
+  },
+  {
+   "addr": "0x8b58bc",
+   "orig": "e3130004",
+   "new": "e355003a"
+  },
+  {
+   "addr": "0x8b58c0",
+   "orig": "0a000005",
+   "new": "01a05008"
+  },
+  {
+   "addr": "0x8b58c4",
+   "orig": "e1a03009",
+   "new": "13a05000"
+  },
+  {
+   "addr": "0x8b58c8",
+   "orig": "e59f1118",
+   "new": "e58d5010"
+  },
+  {
+   "addr": "0x8b58cc",
+   "orig": "e1a02005",
+   "new": "ea00001a"
+  },
+  {
+   "addr": "0x8b58f0",
+   "orig": "03833001",
+   "new": "e320f000"
+  },
+  {
+   "addr": "0x8b5918",
+   "orig": "e355003a",
+   "new": "eaffffdf"
+  },
+  {
+   "addr": "0x8b59c0",
+   "orig": "e51b302c",
+   "new": "eaffffc5"
+  }
+ ]
+}

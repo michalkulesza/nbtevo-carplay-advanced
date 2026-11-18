@@ -65,7 +65,7 @@ was found in the car, and the rules for changing it. README.md is the short user
 | `src/probe.cpp` | `libcpprobe.so`: the installer's KOMBI probe, and the clear of an arrow a finished mm-ipod left. |
 | `src/reboot.c` | `libcpreboot.so`: reboots hu-omap (sync + `sysmgr_reboot`). |
 | `src/texts.py` | Menu texts -> `CarPlayMenu_ALL_Texts.zip`. |
-| `src/tilt_006.json`, `src/tilt_1703.json` | The knob tilt patch words per HMI build (address, original word, new word, with the reasoning). |
+| `src/tilt_006.json`, `src/tilt_1703.json`, `src/tilt_1607.json` | The knob tilt patch words per HMI build (address, original word, new word, with the reasoning). |
 | `plugin/` | The installable plugin, prebuilt: manifest, menu XML, texts zip, `boot.sh`, `restart.sh`, eight libraries. |
 | `carplay-advanced.sh` | Installer: runs on a computer (installs over SSH) or on the head unit (`--payload`). |
 | `tests/` | Mac-side tests (see [Tests](#tests)). |
@@ -170,6 +170,7 @@ boot.sh (from /bin/start_screen.sh): path-manager links for the layout, carplay.
 | HUD effects > (81) Fill toward the turn | 84 / 85 | `hud_fill` | after restart (read when the HUD starts) |
 | ... > Blink near the turn | 88 / 89 | `hud_blink` | after restart |
 | ... > Effect colour > (93) Orange / Grey / White | 96-98 / 99-101 | `hud_colour` = 5 / 3 / 4 (no file: 5, Orange) | after restart |
+| ... > HUD debug log | 108 / 109 | `hud_debug` | within 5 s (`hud.h` checks the file; the HUD-only menu's lines go to `/var/iap/rghook.log`): a summary line (layout, host, calls), then the next 600 HUDTerminal messages |
 | iDrive control > (41) Enable knob tilts | 6 / 17 | `remap_knob` | after restart |
 | ... > Touchpad > (44) Enable touchpad | 7 / 18 | `remap_touchpad` | after restart |
 | ... > Touchpad > Tap touchpad as click | 46 / 47 | `tap_click` | at once (hook installed) |
@@ -200,16 +201,28 @@ boot.sh (from /bin/start_screen.sh): path-manager links for the layout, carplay.
 |---|---|---|---|---|
 | `ID5_1803-510-1749MA Build 71` (006_017_006) | 0x43c02c | 0x1fd0d8c | 0x1fd0cec | +4..+8 / +0x14 / +0x18 |
 | `ID5_1703-490-1650ZD Build 139` (006_006_006, NBTevo_M17345I, MINI F54) | 0x8f55cc | 0x20d9e50 | 0x20d9db0 | +8..+0xc / +0x18 / +0x1c |
+| `ID5_1607-490-1610T Build 153` (NBTevo_ID5_1607_Release, BMW F20; issue #8) | 0x8b4d24 | 0x1ec2a24 | 0x1ec2984 | +8..+0xc / +0x18 / +0x1c |
 
   1703 was mapped from 006 by matching functions instruction by instruction: `handleTouchInput` and `handleControllerInput` are the
   same code, and its `CTouchData` has a reference count at +4. The proxy offsets are the same (`*(activity + 0xb0) + 0x4e60` for the
   controller, `+ 0x52b0` for playback).
+
+  **1607** is a contributor's port (ghackt's 1.2.4, issue #8), mapped from 1703 by hand from the HmiMain3D of the reporter's car;
+  ported here unverified (no HmiMain3D of it here, not tried in a car). The installer's scan finds none of touch / tdfirst / tdend /
+  ctl / play there (`scan none` in `supported_table`). As mapped: `handleControllerInput` (0x8b568c) is 1703's code, so the 19 tilt
+  words are 1703's new words (the key filter's `bhi` keeps its own offset); the proxies of `*(activity + 0xb0)` sit 0xfc lower
+  (controller +0x4d64, playback +0x51b4); `handleTouchInput` is restructured but has the same entry and reads the same `CTouchData`
+  (the time at +0x18 is taken from 1703's layout and only times taps). No `CARPLAY_FULLSCREEN` flag reads, and the layouts are an
+  older format (no `LT_State_CarPlay` / `IsCarPlayFullscreen`), so the entry has `pbw 0, pbwBmw 0, ini 0` (`fullscreen none`): the
+  switch goes back off. `tests/test_builds.py` checks the tilt tables' consistency without firmware, and with `CPA_HMI_1607` every
+  1607 value against the file.
 - **Knob tilts** (`carplay_tilt`; `src/tilt_*.json`, generated into `out/tilt.inc`): `CCarPlayActivity::handleControllerInput` sends
   the controller to CarPlay as `CAuxIn_CarPlayControllerInput` (proxy, rotation, press, back, up, down, left, right, voice). Stock, the
   four direction fields are hard-coded 0: tilt up/down are dropped, tilt left goes out as Back, and tilt right moves the HMI's side
   panel. The patch widens the key filter to 9..14 (tilt up 9, down 10, left 11, right 12, rotate 13/14), stops tilt left setting Back,
   and reuses the 16 instructions of the function's trace printf to zero the four direction words and set "pressed" in the one for
-  key - 9 before jumping to the send call. On 1703 the words are the same except two branches whose distance changed.
+  key - 9 before jumping to the send call. On 1703 the words are the same except two branches whose distance changed; 1607 has 1703's
+  words.
 - **Controller send hook** (`installCtlHook`): even with the directions filled in, Connectivity turns the HMI's message into a
   `KnobEvent` without directions, so the send function itself is hooked. It is an entry hook: the first two instructions (`push
   {r4-r8,fp,lr}; add fp,sp,#0x18`, checked) are replaced by `ldr pc,[pc,#-4]` + our address, and a trampoline page (mmap RWX) holds
@@ -260,6 +273,9 @@ Three parts, all needed:
    before a reboot never reaches the iPhone. For size tries use the test switch `screen_size` "<width> <height> <mm wide> <mm high>"
    (with Full-screen): it replaces `Width`, `Height`, `PhysicalWidth`, `PhysicalHeight` (`patchConn`'s `scr`), and the log line
    says so. 1472 x 600 at 194 x 78 mm reached the iPhone: the same layout, no Dashboard.
+   **Only with the layout in place** (`g_fsOk`): `fullscreenOn()` records whether the wide layout was written and linked (or, on 006
+   BMW, the HMI's own full-width slot is there), and `iniApply()` widens `carplay.ini` only then, so a layout `pbwpatch.h` refuses (a
+   scanned build) never gets a full-width picture cut off in the stock slot.
 
 **BMW** (and BMW i, Rolls-Royce; from the 2018 PSdZData, not tried in a car):
 - **Which layout.** The brand packages are split by the head unit's part: MINI parts carry `swfl_2716` (`mini/`) and `2717` (`bmwi/`,
@@ -348,20 +364,34 @@ first in `LD_PRELOAD`; other `write()` calls go to the next library in the chain
   held back (at most 8 bytes).
 - **Decode** (layout as the community MIB2 implementation, `rgd_tlv.h`):
   - `RouteGuidanceUpdate` 0x5201: route state, maneuver state, current road, destination, distance + string + units, remaining
-    distance, current maneuver index (13), lane index (16) and lanes showing (18), source.
+    distance, current maneuver list (13: u16 indexes, the first is the current maneuver, the second kept for the start marker below),
+    lane index (16) and lanes showing (18), source.
   - `RouteGuidanceManeuverUpdate` 0x5202: index, description, type 0..53, road, step length, exit angle, driving side, junction type
-    and angles; 32 kept by index.
+    and angles; 32 kept by index. Any other printable, NUL-ended text field of 2..18 bytes with a digit is taken as ExitInfo (asked
+    for with `SupportsExitInfo` in the start request; "23B", "Exit 23B"); its number, else "exit <number>" in the description
+    ("Take exit 23B onto I-95" -> "23B"), is `rg_view.exitno` (the KOMBI's street line).
   - `LaneGuidanceInformation` 0x5204: index and lanes (position, status 0 not good / 1 good / 2 preferred, angles, highlight angle
     with 1000 = none); 8 sets of up to 8 lanes, sorted left to right.
 - **Output**: `/var/iap/pps/routeguidance`, PPS-style `key::value` lines, written to `.tmp` and renamed: route_state,
   dist_to_maneuver(_string, _units), current_road, maneuver_index/type/exit_angle/driving_side/road/junction_*, and lanes
   (`status/highlight/angle,angle;...`, while the iPhone shows them). Every message also goes to `/var/iap/rghook.log` with `debug_log` (without it: `RG route_state <n>` when it changes). The file is
   removed when mm-ipod starts, so a new session never shows an old route.
+- **Start marker after a reroute** (`cur_view`; issue #9, BMW F25 X3: "the first direction after a reroute feels missed"; a
+  contributor's change, ghackt 1.2.1, not tried in a car): after a reroute the current list is `[0, 1]` (the start marker, type 11, at
+  0 m, and the first real turn) and becomes `[1, 2]` only later, so the start marker was drawn instead of the turn. When the current
+  maneuver is the start marker, it is 30 m away or less, and the next listed maneuver has arrived (0x5202) and is not a start marker,
+  that one is published (file and `rg_view_get`, so the KOMBI too), with its step length as the distance in the iPhone's units
+  (`fmt_dist`: m / km, ft / mi, yd / mi; integer only), or the iPhone's own distance when it has none. Test switch
+  `keep_start_marker` (read once): as before. With `debug_log`: `RG start marker <i> at <m> m: showing maneuver <j> ...`. The 32
+  maneuver slots are not cleared at a reroute, so a slot not yet resent may still hold the old route's maneuver.
 - **For the senders in mm-ipod** (`rgview.h`):
   - The decoded state is updated under a sleep-based lock (`st_lock`): mm-ipod's threads have different fixed priorities, and a spin
     on `sched_yield` once starved the holder.
-  - `rg_view_get()` copies the same fields `hud.h` reads from the file.
-  - After every message, `kick()` calls `rgk_kick()` / `rgh_kick()` in the KOMBI / MOST builds; the plain build calls nothing.
+  - `rg_view_get()` copies the same fields `hud.h` reads from the file, plus `exitno` and `roadfb` (the street is the current road:
+    the maneuver names none).
+  - After every message, `kick()` calls `rgk_kick()` / `rgh_kick()` in the KOMBI / MOST builds; the plain build calls nothing. The
+    MOST builds also call `rgh_kick()` once the link is up (identification and authentication done), so the MOST client, its test
+    channel and "HUD debug log" run during a CarPlay connection without a route (HUD-only installs).
   - The file helpers use rghook's own libc pointers, because its `read` / `write` are the hooks.
 
 ## Directions on a MOST HUDTerminal (`src/hud.h`, `src/hudshapes.h`)
@@ -389,9 +419,78 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
   - No active route clears to the state the BMW navigation leaves at the end of a route.
 - **The BMW navigation wins**: any other client's drawing call on 82/00 (not an echo of ours; recent calls are hashed) means the BMW
   navigation is guiding. Nothing is drawn until 5 s after its last call, then the picture is drawn again.
+- **Set-up** (`initTerminal`, `takeLearnt`, `measureBox`; `src/hudhandles.h`), from the cluster firmware and the navigation's own
+  set-up (MINIHU `docs/HUD_TERMINAL_REFERENCES.md` "The whole picture", `docs/CLUSTER_FIRMWARE.md`):
+  - **Handles are the cluster's.** At its start the BMW navigation creates its instances by name (200 `CreateInstance`, answer
+    `[index u16][handle u16]`) and puts them into frames (22B `FrameAddItem`, answer `[frame][item][u8][kind u16]`). The answers pass
+    our client too (another client's ResultAck): `hudh::Learner` takes the roles from the kinds of the first frame (4 picture: the
+    first two are the guiding icon's buffers; 3 street, 5 distance, 2 unit, 6 the bargraph; frames 11-13: texts first, the guiding
+    icon is the 5th/6th picture, untried), per terminal (82/00, 82/02). The MINI F54's set-up gives 1 2 3 4 5/6, bar 0x16 (car log
+    2026-11-13, `tests/test_hud_handles.py`). A complete map is kept in `hud_handles` / `hud_handles_2` ("frame street distance unit
+    pictureA pictureB bar", decimal or 0x hex, also by hand) and used at once; at the next start (and in mm-ipod, which starts after
+    the set-up, and in libcpprobe's clear) the kept map is used until a new set-up comes. Without either: the profile below.
+    Why: the F25 X3 refuses texts on 2/3/4 and takes them on 0x0c/0x12/0x0f (issue #9), its buffer 5 is 0 x 0.
+  - **The frame's bar** (known from the set-up only) is hidden with every picture: we never set its value (an F30 6WB showed it
+    over the speed, PR #13).
+  - **Picture size** (`measureBox`, at start and after the handles changed, not while the navigation guides): `ImageGetSize` on
+    picture A in the F54 form `[h]` and the 6WB form `[h][01]` (one is refused), 2 s. `fitBox` (ghackt's rule): 170 x 120 or more
+    = the 6WA box; smaller = a square of 25/36 of the shorter side (<= 100), centred across, two thirds down (120 x 72 -> (35,15)-(85,65),
+    the MINI box, drawn by halving as before; 126 x 77 -> (36,16)-(89,69)); 0 x 0 (not an instance yet) or no answer: no change.
+    Other boxes are mapped linearly (`hudshapes.h` `toBox`, division by the constant 100). Not on the 6WB plane, not with a switch.
+  - **Terminals**: drawn on 82/00, or 82/02 when the registry has no 82/00. Once the navigation is seen setting up the other one
+    (or its map is kept), every drawing call also goes there with its handles (`call`: the first handle, both of 20E, translated by
+    the two maps; not C04, not `hud_hide`). On the MINI, 82/00 is the HUD ("FB_HUD_Terminal_hud", with C01 HUDSelection / C02
+    AdjustHUD) and 82/02 the kombi terminal. `hud_inst` "<drawn on> [<copy to>]" (ghackt) decides instead: "0" no copies, "2",
+    "0 2". Untried on a car with two terminals.
+  - **Texts** (`textChar`): the distance's decimal comma goes as a point ("1,5 km" showed "1 5 km" on an F31, issue #12; `hud_comma`
+    keeps it); typographic spaces / dashes / quotes become plain ones and invisible format characters (soft hyphen, zero width,
+    direction marks, BOM) are left out: Yandex Navi's street names stopped showing (2026-11-18, MINI) while Apple's and Google's did,
+    and a cluster may refuse a text with a character its font lacks. Not yet confirmed as the cause: the log has the cluster's
+    refusal (`fkt 210 op 9/f`) and "no street from the iPhone" when both road fields are empty. `hud_text_handles` "<street>
+    <distance> <unit>" (ghackt; 0 = not drawn) moves the texts.
+  - **Day / night** (`g_night`): the HMI tells Connectivity CarPlay's night mode on MOST (AuxiliaryInput 24/70
+    `CarPlaySetNightMode` CD7, from the HMI's MOST map; Vehicle 05/00 `DayNight_ChangeOver` C31 only logged); our client logs the
+    first 12 it sees and takes the last payload byte (non-zero = night). By day the effect colour is `hud_colour_day` if set. The
+    F54's colour 5 is orange at night and green by day (2026-11-18); the orange by day is not measured. Whether these messages reach
+    our client at all is not known yet.
+- **Cluster layout** (`detectLayout`, once, when the worker first has the HUDTerminal host): the navigation creates the handles, so
+  they differ per cluster. 6WA (F20) and the F54: 1..6 as above. **6WB** (BMW F-series multifunction cluster; map from
+  JayJay3071/nbt-android-auto, verified there on an old NBT): 0x17 the area, 0x1A/0x1B/0x1C street / distance / unit, 0x1F/0x20 the
+  double-buffered perspective plane 221 x 158. `ImageGetSize` (C04) is asked for 0x1F and 5 in both forms (`[h][01]` 6WB, `[h]` F54);
+  only a non-zero size counts (the F54 answers 0 x 0 for handles it lacks). 0x1F alone = 6WB: `use6wb` moves the picture from the 6WA
+  box to (66,40)-(166,140) and sends texts as ISO-8859-15 (encoding 01, JayJay). Also 6WB when the BMW navigation is seen drawing on
+  0x18..0x35 (above the F54's surfaces; only without a map from a set-up); the switch file `hud_layout` (`6wa` / `6wb`) decides
+  instead. With a map from a set-up the 6WB look (texts, outlines, plane) is used with its handles. Logged: `layout probe`,
+  `cluster layout ...`, and every `registry: HUDTerminal 82/xx` instance (82/02 may be a separate HUD). The 6WB profile is untested
+  in a car (2026-11-15: a BMW F-series user, HUD dark with the 6WA handles).
+  - **6WB drawing**: every polygon also goes as a closed outline (type 2, item + 0x100) with line width 6. The navigation sets up
+    each instance itself at start (line width, line colour, fill colour, fill mode 21C) and its 6WB look is outlines; JayJay's
+    visible arrows there were polylines with width 6. Our line width 0 + filled polygons may show nothing under its fill mode.
+  - **Instance names** (BMW navigation `NavNBTEvoController` 006): it creates its instances by name in two back-ends,
+    `CIcHudComm_TF1_3` ("Old IC": `TopFrame`, `TopFrame2/3`, `1.GuidingIcon`/`2.GuidingIcon`, `1.DecreasingArrow`,
+    `1.LaneGuidance`, `ComingStreet`, `Distance`, `Unit`, `Potentiometer`, `Bargraph3`, `1.JunctionView`) and
+    `CIcHudComm_TF11_13` ("FPK" freely programmable cluster: `Top_Frame_11/12/13`, `Coming_Road_11_1`, `Distance_11_1`,
+    `Unit_11_1`, `Guiding_Arrow_11_1/_2`, `Lane_Guiding_11_1/_2`, `Bargraph_11_1`, `Junction_View_12_1/_2`, `CCP_11_1`).
+    The cluster firmware's function table (MINI, 2018) has 200 CreateInstance, 201 ReleaseInstance, 203 GetInstanceID and no 202;
+    the navigation's first call is 203 (answer `00 00`). Names are not asked: the set-up above gives the handles. It also has a
+    separate HUD terminal connection, used only with
+    `FPK_PLUS_HUD` coded (display selection FPK / HUD / FPK+HUD): a windscreen HUD is probably its own HUDTerminal 82/02.
+  - **`hud-probe` action** (installer; from a computer it runs like `status` and saves the output as `BACKUP/hud-probe-<time>.txt`):
+    on the unit (`hud_probe`) the plugin's HUD state, switches and start-up HUD lines (MOST client, registry 82/xx, layout); then
+    "HUD debug log" on for the run (off and on again if it was on: the plugin logs its terminals and handles), `ImageGetSize`
+    0x01..0x40 in both forms through the test channel, and the answers parsed from the plugin log (surfaces with a size, the
+    navigation's set-up answers seen, errors). HUD-only installs: the log is `/var/iap/rghook.log`.
+    `hud_debug` is put back as it was; `HUD_PROBE_WAIT` (8 s) per step. Needs the plugin with its HUD running (HUD-only: during
+    a CarPlay connection).
+  - **Visual check** (computer, on a terminal; `--yes` or no terminal skips it): five test pictures (`probe_pattern`, generated
+    batches: a white square + "TEST" as the distance with that layout's visibility calls) for 6WA, the MINI box and 6WB on 82/00,
+    and 6WA / 6WB on 82/02 (the test channel's `@2` line, hud.h `runCmds`). Each is drawn (`--probe-step <name>:draw`, internal),
+    you answer cluster y/n/? and HUD y/n/?, it is cleared; the answers are appended to the saved output.
 - **Picture box**: the shapes are drawn in the 6WA box (70,20)-(170,120). On a MINI (its layout present) every point is mapped to
-  (35,15)-(85,65), where the F54 cluster's own navigation draws (captured in the car). `hud_box_6wa` keeps the 6WA box; `hud_mono`
-  draws everything in the route colour.
+  (35,15)-(85,65), where the F54 cluster's own navigation draws (captured in the car), until `measureBox` fits it to the buffer.
+  Switches: `hud_box_6wa` keeps the 6WA box; `hud_box` "mini" / "6wa" / "<x> <y> <size>" (ghackt) / "<x0> <y0> <x1> <y1>" (PR #13,
+  FreZZZeR: "35 15 85 65" verified on an F30 6WB, 126 x 77 buffer); `hud_hide` "<handle> ..." (PR #13: "21 22" hid that 6WB's own
+  bar) makes handles invisible with every picture; `hud_mono` draws everything in the route colour.
 - **Pictures** (`hudshapes.h`): Mapbox's maneuver drawings (`hudglyphs.h`, generated by `tools/hud_glyphs.py` from
   mapbox-navigation-ios v0.40.0 `ManeuversStyleKit.swift`), turned into filled convex pieces, for all 54 iAP2 maneuver types.
   Regenerating, previewing and changing them: the `hud-glyphs` skill. The pieces of one tone that share an edge are joined back into
@@ -431,7 +530,8 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
 - **Test channel**: `/dev/shmem/carplaymenu-hudcmd`, one call per line `"<fkt hex> <payload hex>"`, run once, to try a cluster's
   layout without a rebuild. The first 600 HUDTerminal messages in both directions go to the log, and each batch restarts that count
   so its calls and the cluster's answers are logged. `tools/hud_probe.sh` (run on the head unit, with "CarPlay directions in HUD" on
-  and no route) drives it: `sizes` (F54 form; `sizes6wb`), `bar`, `concave`, `colours`, `vis`, `raw`, `seen`, `log`.
+  and no route) drives it: `sizes` (F54 form; `sizes6wb`), `bar`, `concave`, `colours`, `text` (the three SetText forms on one
+  handle), `box` (a test frame for a picture box; `box ... save` writes `hud_box`; both ghackt's), `vis`, `raw`, `seen`, `log`.
   `tools/hud_sim.sh` writes a pretend route into `/var/iap/pps/routeguidance` with a counting-down distance.
 
 ## Directions on an Ethernet KOMBI (`src/kombi.h`, `src/rgkombi.cpp`)
@@ -439,8 +539,8 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
 G-series and J29 clusters (Ethernet KOMBI) have no `HUDTerminal` on MOST. Their KOMBI has its own route-guidance service,
 **BMW.IC.Guidance, SOME/IP service 0xB006, TCP `160.48.199.96:30502`**, which draws the arrow, distance, street and lane row in the
 cluster and the HUD. `kombi.h` ports NBT-AAD's car-verified stack (J29; ftojke's G30 CarPlay HUD uses the same one) to freestanding
-C++. **For the same inputs it produces NBT-AAD's bytes** (checked when it was ported; the street is cut to 40 characters, as their
-display layer does).
+C++. **For the same inputs it produces NBT-AAD's bytes** (checked when it was ported; the street was cut to 40 characters, as their
+display layer does; it is now shortened to 22, `shortRoad` below).
 
 - **Graph** (`Graph`): every frame is a byte copy of NBT-AAD's captured factory route start (`kombitemplate.h`, 97 frames, instance
   handle 0xC8) with only proven fields changed:
@@ -472,7 +572,9 @@ display layer does).
   `O_NONBLOCK` 0x80, `F_GETFL`/`F_SETFL` 3/4, `SOL_SOCKET` 0xffff, `SO_SNDTIMEO`/`SO_RCVTIMEO`/`SO_ERROR` 0x1005/0x1006/0x1007,
   `IPPROTO_TCP` 6, `TCP_NODELAY` 1, `MSG_PEEK` 2, `MSG_DONTWAIT` 0x80, BSD `sockaddr_in` with `sin_len`, 8-byte `timeval`.
 - **Display** (`Output::tick`, from NBT-AAD's `j29_display.cpp`):
-  - A new maneuver or street sends an in-place update if one is shown and in-place works, else the whole graph.
+  - A new maneuver or street sends an in-place update if one is shown and in-place works, else the whole graph. A street change on
+    the same arrow does that only for the maneuver's own street and not within 4 s of the last graph (the cluster blinks); the car's
+    current road (`roadFb`, the maneuver names none) changes as it drives and redraws nothing (ghackt 1.2.9, J29 / A90).
   - A rejected in-place update means whole graphs from then on. A rejected whole graph or distance turns the output off until the
     process restarts. A link error retries after 5 s with the whole graph.
   - A lane change on the same maneuver resends at most every 3 s.
@@ -483,7 +585,12 @@ display layer does).
     everything else straight 1.
   - Lanes: status good/preferred = a lane to take. The arrow comes from the highlighted angle (else the first one): <=20 straight,
     <=60 half, <=120 normal, <=170 tight, else U-turn. A lane without a direction, or more than 8 lanes, means no lane row.
-  - Distance: the number and unit from the iPhone's text ("450 m"), else whole metres, "-" with nothing.
+  - Distance: the number and unit from the iPhone's text ("450 m"), else whole metres, "0 m" with nothing (with "-" the cluster
+    showed "-m").
+  - Street (`shortRoad`): at most 22 characters (UTF-8; the windscreen HUD's larger font cut longer names off at the right edge,
+    ghackt 1.2.9). A name that fits is sent as it is; a longer one gets common English short forms (Street St, Avenue Ave, North N,
+    ...), then trailing words dropped, one long word cut at a character. Test switch `kombi_road_max` (8..60, read when the worker
+    starts). A highway exit (28 / 29) with an exit number shows `Exit 23B  <road>` (the road only when it is the maneuver's own).
   - Car-verified by NBT-AAD: LEFT 6, RIGHT 7, DESTINATION 10, lane arrows 1/2/6/7. The rest follow the KOMBI enum names.
 - **Worker in mm-ipod** (`rgkombi.cpp`): started by the first `rgk_kick()`. Every 500 ms, while `hud_guidance` exists, it snapshots
   the state (`rg_view_get`) into `Output::tick`. Loading / Locating keeps the arrow. If the output fails, it stops for the session.
@@ -576,6 +683,7 @@ display layer does).
 - Output: a heading per step, ✓ / ! marks, the head unit's lines indented (colours only on a terminal, `NO_COLOR` turns them off).
 - A restart never answers (the unit goes down with the connection open): `remote_reboot` runs it in the background, shows its lines,
   and stops waiting once the unit says it reboots ("rebooting the head unit" from libcpreboot.so, or OnOffDSICommander appreset).
+  It waits `REBOOT_CONFIRM_S` (75) s; no word by then is a note and exit 3 (what ran before it is complete), not an ERROR.
 - QNX `sh` with `set -e` exits when a loop body ends in a false `[ ] && ...` (the Mac's shells do not): write `if ...; then ...; fi`.
   /bin is `/fs/sda0/bin`, read-only until the installer remounts it. `/opt/hmi/data` is a link to `/opt/hmi/ID5/data`, and boot.sh
   links the layout under both spellings: removing a layout link removes both (`unshadow`; the MINI pair and the common pair). Both
@@ -602,7 +710,9 @@ display layer does).
   4. After the commit, `boot.sh` relinks and `carplaymenu/cluster` is written. `--restart-hmi` reboots only after the backup copy.
 - Actions: `install`, `uninstall [--keep-config]`, `status` (build, hashes, files, links, PIDs, the cluster probe and the recorded
   choice, backups), `restart`. Options: `--host`, `--dry-run`, `--restart-hmi`, `--yes`, `--full` / `--hud`, `--cluster most|kombi|both`.
-- Known limitation: a second HUD-only install on top of one stops at "mm-ipod is missing or already a link".
+- **A second `--hud` install on top of one** (issue #9): mm-ipod is then the plugin's link to the wrapper and its original is
+  already in `$ORIG`, so the wrapper's `bin/mm-ipod` is copied from `$ORIG/mm-ipod`. Before, it stopped with "mm-ipod is missing or
+  already a link".
 - The tests redirect the path constants (one `NAME=` line each) and stub `uname`, `pidin`, `on`, `ssh`, `mount`, `df`, `sync`,
   `OnOffDSICommander`, `nc` and the probe host. A new path constant needs an entry in `tests/test_installer.py`.
 
@@ -612,6 +722,7 @@ display layer does).
 |---|---|---|
 | 006_017_006 | `ID5_1803-510-1749MA Build 71` | all options, including the side-panel flag; hashes from the software package; not tried in a car |
 | 006_006_006 | `ID5_1703-490-1650ZD Build 139` (NBTevo_M17345I, MINI F54 8.8" 1280x480) | tested in a car |
+| NBTevo_ID5_1607_Release | `ID5_1607-490-1610T Build 153` (BMW F20, issue #8) | tilts, touchpad, zoom, HUD; no full screen (layout format); mapped by hand (`scan none`); hashes and its own `libconn_carplay.so` (`bbdbae7d...`) and mm-ipod (`5dd2351b...`) from the contributor (ghackt); not tried in a car |
 
 Both builds on a **BMW** (common layout, 1440 / 1280 wide): the same HMI and Connectivity, so the same hashes and patches; full screen
 built and checked against the package's layouts only, **untested in a car** (nor in IDEmu with a BMW environment).
@@ -619,7 +730,7 @@ built and checked against the package's layouts only, **untested in a car** (nor
 - Support is decided by the SHA-256 of `HmiMain3D` and `libconn_carplay.so` (`supported_table` in the installer). The plugin itself
   picks addresses by build name (`kBuilds`, then `build.tab`) and checks every word.
 - **mm-ipod** (every mode, iDrive 5 and 6): hashed and looked up in `mmipod_table` (sha256 and the builds that have it; 006 and 1703
-  share `d3f7c897...`). With the directions installed `/opt/conn/bin/carplay/mm-ipod` is a link to the wrapper, so the kept original
+  share `d3f7c897...`, and the F25's 1903-490 of issue #9 has it too). With the directions installed `/opt/conn/bin/carplay/mm-ipod` is a link to the wrapper, so the kept original
   (`carplaymenu/bin/mm-ipod`) is hashed. Unknown = a note only: librghook rewrites iAP2 messages in `read()`/`write()` and uses no
   mm-ipod addresses. The hash is in both issue links.
 - **HMI scan** (`hmi_scan`, on the computer, `od` + `awk` only; ~20 s): the installer reads HmiMain3D once into its work folder, and
@@ -632,7 +743,9 @@ built and checked against the package's layouts only, **untested in a car** (nor
   (`=`, `imm24` keeps the found branch offset, `b:tB+0x40` a branch to that place). Tilt and fullscreen are all or nothing; no
   fullscreen code = 1703-like layout (`pbw 2`).
   - Known build: the scan must give exactly the built-in values (`scan` rows of `supported_table`: SHA-256 of the output without its
-    `hmi` line and comments); a mismatch is a note, and the built-in table is used.
+    `hmi` line and comments); a mismatch is a note, and the built-in table is used. `scan none`: mapped by hand, the patterns do not
+    cover the build, and the installer says so instead of asking for a report. `fullscreen none`: the build has no Full-screen
+    CarPlay (`pbw 0`), said before the install. `supported_as` ignores both rows.
   - Unknown build, scan complete: "not supported yet ... install with the scanned addresses? [y/N]" (`--yes` = yes; no terminal and
     no `--yes` = nothing installed), `--hmi scanned` and `build.tab` uploaded with the plugin; the head unit refuses it unless its
     `hmi` line is this HMI's version line. A pre-filled issue (`Scanned HMI ...`) carries the hashes, the scan hash and build.tab.
@@ -652,9 +765,9 @@ built and checked against the package's layouts only, **untested in a car** (nor
 | Path | What |
 |---|---|
 | `/var/opt/hmi/data/rw/Plugins/CarPlayMenu/` | the plugin (= `/fs/sda1/opt/hmi/data/ID5/Plugins/CarPlayMenu` at boot) |
-| `/var/opt/hmi/data/rw/carplaymenu/` | switches; the generated `Spec_State_Merged.pbw` (MINI) or `Spec_State_Merged-common.pbw` (BMW), `carplay.ini`, `carplay-conn.ini`; the wrappers `mm-ipod` and `Connectivity`; `bin/` copies of the originals; `cluster`; `boot_pending`, `boot_strikes`, `safe_mode`; `menu_v2` |
-| switch files | `fullscreen`, `remap_knob`, `remap_touchpad`, `tap_click`, `two_finger`, `touchpad_mm`, `knob_zoom`, `hud_guidance`, `hud_fill`, `hud_blink`, `hud_colour` |
-| test switches | `fullscreen_ini`, `no_pinch`, `knob_nudge`, `knob_repeat`, `no_knob_repeat`, `zoom_reverse`, `touchpad_tilts`, `media_gestures`, `touch_log`, `ctl_log`, `hud_box_6wa`, `hud_mono`, `hud_convex`, `screen_size`, `zoom_at` |
+| `/var/opt/hmi/data/rw/carplaymenu/` | switches; the generated `Spec_State_Merged.pbw` (MINI) or `Spec_State_Merged-common.pbw` (BMW), `carplay.ini`, `carplay-conn.ini`; the wrappers `mm-ipod` and `Connectivity`; `bin/` copies of the originals; `cluster`; `boot_pending`, `boot_strikes`, `safe_mode`; `menu_v2`; `hud_handles`, `hud_handles_2` (the HUDTerminal handles from the navigation's set-up) |
+| switch files | `fullscreen`, `remap_knob`, `remap_touchpad`, `tap_click`, `two_finger`, `touchpad_mm`, `knob_zoom`, `hud_guidance`, `hud_fill`, `hud_blink`, `hud_colour`, `hud_debug`; `hud_layout` (`6wa` / `6wb`, no menu row) |
+| test switches | `fullscreen_ini`, `no_pinch`, `knob_nudge`, `knob_repeat`, `no_knob_repeat`, `zoom_reverse`, `touchpad_tilts`, `media_gestures`, `touch_log`, `ctl_log`, `hud_box_6wa`, `hud_box`, `hud_hide`, `hud_inst`, `hud_text_handles`, `hud_comma`, `hud_colour_day`, `hud_mono`, `hud_convex`, `screen_size`, `zoom_at`, `keep_start_marker`, `kombi_road_max` |
 | `/dev/shmem/carplaymenu-knob`, `-pad` | plugin -> libcppinch: directions, both touchpad fingers |
 | `/dev/shmem/carplaymenu-hudcmd` | the HUDTerminal test channel |
 | `/dev/shmem/carplaymenu-kombi.shown`, `-most.shown` | markers: the pid of the mm-ipod with an arrow shown |
@@ -672,12 +785,17 @@ built and checked against the package's layouts only, **untested in a car** (nor
 | `test_installer.py` | the installer under `sh` and `ksh` in a fake file tree: computer and head-unit halves, checks, backups, rollback, hooks, the HUD-only wrapper, the cluster choice and variants; the HMI scan on made-up HmiMain3D files built from its own patterns (`synth_hmi`), the scanned install; with `CPA_HMI_006` / `CPA_HMI_1703` (the plain HmiMain3D of both builds) the scan of the real builds against `--expect` and the `scan` rows |
 | `test_carplay_bootguard.py` | the real `boot.sh` guard: strikes, safe mode, disable, Restart to apply, a run while the HMI is up |
 | `test_hud_shapes.py` | every maneuver picture: convex pieces inside the box, roundabout details, mirroring, lanes; with `MAPBOX_STYLEKIT` set, that `hudglyphs.h` is what the generator makes |
+| `test_hud_handles.py` | `hudhandles.h`: the F54's own set-up gives 1..6 and bar 0x16, another numbering its own, frames 11-13, the kept file's text |
+| `test_hud_init.py` | `hud.h` built for the Mac with the DSI stream stubbed: handles learnt per terminal and drawn on, copies to 82/02 with its handles, the bar hidden, `hud_hide` and C04 on one terminal only, the box fitted to `ImageGetSize` answers, the comma and typographic characters in texts, day / night and `hud_colour_day` |
 | `test_rghook_lanes.py` | `rghook.c` lane decoding into the routeguidance file |
+| `test_rghook_reroute.py` | `rghook.c` `cur_view`: the start marker skipped after a reroute, the distance in each unit, `keep_start_marker`, the cases left as before |
+| `test_builds.py` | `kBuilds` and `src/tilt_*.json` without firmware: the same 19 places and new code in every build, every branch lands where meant, the 1607 entry and its installer rows; with `CPA_HMI_1607` (the plain HmiMain3D of 1607 Build 153) every 1607 value against the file |
 | `test_layout.py` | `pbwpatch.h` and `iniwide.h`: synthetic layouts and carplay.ini files; with `CPA_LAYOUTS` (a folder with the package's files, e.g. IDEmu's `cache/bmw-layouts/<build>/...`) the real MINI and common layouts of both builds and carplay.ini, outputs pinned by SHA-256 |
-| `test_kombi.py` | `kombi.h` against a fake KOMBI on 127.0.0.1: headers, sequences, rejection, cookies, reconnect, probe, the clear's pid check, mappings |
-| `test_rgkombi.py` | `librghook-kombi` end to end: iAP2 messages in, KOMBI frames out, marker, switch off, left-over arrow, BMW-route yield (a log file in place of `sloginfo`) |
+| `test_kombi.py` | `kombi.h` against a fake KOMBI on 127.0.0.1: headers, sequences, rejection, cookies, reconnect, probe, the clear's pid check, mappings, the street (`shortRoad`, exit number, "0 m"), the redraw rule for street changes |
+| `test_rgkombi.py` | `librghook-kombi` end to end: iAP2 messages in, KOMBI frames out, marker, switch off, left-over arrow, BMW-route yield (a log file in place of `sloginfo`), the exit number from the description and from ExitInfo, `kombi_road_max` |
 
-Not covered on the Mac: anything that needs the HMI, Connectivity or MOST (`hud.h`'s client, the hooks, the `spawn` of `sloginfo`).
+Not covered on the Mac: anything that needs the HMI, Connectivity or MOST (`hud.h`'s real DSI client, the hooks, the `spawn` of
+`sloginfo`).
 
 ## Status: verified and open
 
@@ -703,7 +821,11 @@ Open / not verified:
 - Lag: 1152 x 480 / 1024 x 480 via `screen_size` are untried.
 - HUD fill / blink in daylight (the palette may change with day / night) and on a real drive.
 - The Mapbox lane drawings in the car (the lanes themselves were verified with the first, hand-made arrows).
-- The Ethernet KOMBI output (tested only against a fake KOMBI), and NBT-AAD's log lines for the BMW-route yield on a G-series.
+- The Ethernet KOMBI output (tested only against a fake KOMBI), and NBT-AAD's log lines for the BMW-route yield on a G-series; the
+  street shortening, the exit number and the redraw rule (from a contributor's J29 / A90 reports, not seen here).
+- The start-marker skip after a reroute (`cur_view`) on a real reroute.
+- 1607-490 Build 153 (issue #8) in a car: every option (the `touch data` log line for `tdTime`, tilts, the touchpad, zoom with its own
+  `libconn_carplay.so`, the directions with its own mm-ipod).
 - `librghook-most` / `-both`: the MOST client inside mm-ipod, and the watcher's MOST clear.
 - The bootloop guard in a car after a failed boot.
 

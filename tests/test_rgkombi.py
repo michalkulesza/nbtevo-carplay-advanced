@@ -191,6 +191,30 @@ class RgKombi(unittest.TestCase):
         self.assertEqual(self.marker.read_text().strip(), str(self.p.pid))
 
 
+    def street_of(self, reqs):
+        return {self.text_at_bom(r['body'])[0] for r in reqs if r['method'] == 0x3 and r['body'][8] == 3 and r['body'][5:8] == b'\0\0\0'
+                and len(r['body']) > 9}
+
+    def test_highway_exit_number(self):
+        # the exit number on the street line: from the description ("Take exit 23B ..."), or from ExitInfo (a text field of the
+        # maneuver update rghook.c does not otherwise know), which wins
+        self.start()
+        self.msg(0x5202, maneuver(0, 23, 'I-95 North') + tlv(2, b'Take exit 23B onto I-95 North\0'))
+        self.msg(0x5201, update())
+        reqs = self.wait_requests(97)
+        self.assertEqual(self.street_of(reqs), {'Exit 23B  I-95 North'})
+        self.msg(0x5202, maneuver(1, 23, 'Route 9') + tlv(2, b'Take the exit\0') + tlv(13, b'Exit 7A\0'))
+        self.msg(0x5201, update(idx=1))                                  # same arrow, new street: drawn 4 s after the graph
+        self.assertEqual(self.street_of(self.wait_requests(9, timeout=8)), {'Exit 7A  Route 9'})
+
+    def test_road_max_switch(self):
+        (self.cfg / 'kombi_road_max').write_text('8\n')
+        self.start()
+        self.msg(0x5202, maneuver(0, 1, 'Main Street'))
+        self.msg(0x5201, update())
+        self.assertEqual(self.street_of(self.wait_requests(97)), {'Main St'})
+        self.assertIn('kombi: street at most 8 characters (kombi_road_max)', self.logtext())
+
     def bmw(self, *lines):
         with self.slog.open('a') as f:
             for l in lines:

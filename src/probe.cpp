@@ -118,6 +118,8 @@ void clearMost(const char *pid) {
   if (!names(RG_MOST_MARKER, pid))
     return;
   hud::g_log = logLine;
+  hud::readInst();  // the terminals and handles the sender drew with
+  hud::loadKept();
   char m[160];
   bool ok = false;
   if (hud::dsiOpen()) {

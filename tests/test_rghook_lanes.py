@@ -22,7 +22,7 @@ HARNESS = r'''
 extern int open(const char *, int, ...); extern int close(int); extern long write(int, const void *, unsigned long);
 extern int unlink(const char *); extern int rename(const char *, const char *); extern int printf(const char *, ...);
 extern long strtol(const char *, char **, int);
-static int mac_open(const char *p, int f, ...) { (void)f; return open(p, 0x601 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644); }
+static int mac_open(const char *p, int f, ...) { return f ? open(p, 0x601 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644) : open(p, 0); }
 static long mac_write(int fd, const void *b, size_t n) { return write(fd, b, n); }
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10; }
 int main(int argc, char **argv) {          // message id (hex) and its parameters (hex), one pair per argument pair

@@ -14,6 +14,8 @@ struct rg_view {
   int angle;                     /* exit angle, positive = right */
   unsigned dist, units;          /* metres to the maneuver, iAP2 units of the iPhone's text (0 km, 1 mi, 2 m, 3 yd, 4 ft) */
   char dist_s[32], road[128];    /* the iPhone's distance text ("450 m"), the maneuver's road (else the current road) */
+  unsigned char roadfb;          /* 1 = road is the current road (the maneuver names none): it changes as the car drives */
+  char exitno[16];               /* the maneuver's exit number (ExitInfo, else "Take exit 23B" -> "23B"), "" = none */
   unsigned nl;                   /* lanes the iPhone shows now, left to right */
   struct rg_lane lanes[8];
 };

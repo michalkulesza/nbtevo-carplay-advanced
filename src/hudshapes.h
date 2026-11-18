@@ -70,7 +70,7 @@ inline int udiv(int a, int b) {
 // HUD pictures. A tone 1 piece over tone 0 pieces shows grey there (the pin's hole, the ferry's windows).
 const u32 kMaxPieces = 192;  // a maneuver takes at most 64, the lanes (addLanes, Mapbox's lane drawings) up to 8 x 19 more; whole
                              // polygons (mergePieces) join them back into a few MOST calls a lane
-const u32 kPiecePts = 10;   // 8 from add(); the progress fill (applyFill) cuts a piece, one point more
+const u32 kPiecePts = 10;    // 8 from add(); the progress fill (applyFill) cuts a piece, one point more
 struct Shape {
   u32 n, tone;
   Pt p[kMaxPieces][kPiecePts];
@@ -207,7 +207,7 @@ inline void road(Shape &s, P16 c, int deg, int r0, int r1, int w) {
 // ---- the roundabout: Mapbox's drawRoundabout ------------------------------------------------------------------------------------------
 // Worked out for right-hand traffic (anticlockwise, from the entry below); shapeOf mirrors it for left-hand traffic.
 const int kRoundaboutRadius = 104, kRoundaboutWidth = 64;  // Mapbox: radius 6.5, line 4
-const int kRbUturn = -120;        // U-turn at the roundabout: out beside the entry, clear of it
+const int kRbUturn = -120;                                 // U-turn at the roundabout: out beside the entry, clear of it
 // Mapbox's roundabout_angle: degrees travelled round from the entry to the exit at angle e; 60..300, or the arrow head runs into
 // the entry
 inline int rbArc(int e) {
@@ -958,6 +958,26 @@ inline u32 toMiniPoly(Pt *p, u32 k) {
     p[i].x = (s16)(35 + ((p[i].x - 70) >> 1));
     p[i].y = (s16)(15 + ((p[i].y - 20) >> 1));
   }
+  return tidy(p, k);
+}
+// Any other picture box (hud.h: measured from the cluster's picture buffer, or the hud_box switch): the 6WA box (70,20)-(170,120)
+// mapped linearly onto (x0,y0)-(x1,y1). The division is by the constant 100 (no division helper on QNX). A piece is hulled again
+// (toMini's reason), a whole polygon tidied.
+struct Box {
+  int x0, y0, x1, y1;
+};
+inline void mapBox(Pt *p, u32 k, const Box &b) {
+  for (u32 i = 0; i < k; i++) {
+    p[i].x = (s16)(b.x0 + (p[i].x - 70) * (b.x1 - b.x0) / 100);
+    p[i].y = (s16)(b.y0 + (p[i].y - 20) * (b.y1 - b.y0) / 100);
+  }
+}
+inline u32 toBox(Pt *p, u32 k, const Box &b) {
+  mapBox(p, k, b);
+  return hull(p, k);
+}
+inline u32 toBoxPoly(Pt *p, u32 k, const Box &b) {
+  mapBox(p, k, b);
   return tidy(p, k);
 }
 

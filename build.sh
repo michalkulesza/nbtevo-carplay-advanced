@@ -22,7 +22,7 @@ for var, path in zip(sys.argv[1::2], sys.argv[2::2]):
     print("const Word %s[] = {" % var)
     for w in d["words"]: print("  { %s, 0x%s, 0x%s }," % (w["addr"], w["orig"], w["new"]))
     print("};")
-' kTilt006 src/tilt_006.json kTilt1703 src/tilt_1703.json kTilt1811 src/tilt_1811.json > out/tilt.inc
+' kTilt006 src/tilt_006.json kTilt1703 src/tilt_1703.json kTilt1607 src/tilt_1607.json kTilt1811 src/tilt_1811.json > out/tilt.inc
 
 # the plugin (loaded by the HMI)
 clang "${CF[@]}" -I. -c src/cpm.cpp -o out/cpm.o
@@ -35,17 +35,17 @@ for s in $(nm -u out/cpm.o | awk '{print $NF}' | grep '^_ZN3bmw'); do printf '.g
 clang "${CF[@]}" -c out/stubs/fw.s -o out/stubs/fw.o
 echo > out/stubs/empty.c
 clang "${CF[@]}" -x c -c out/stubs/empty.c -o out/stubs/empty.o
-$LD -soname libc.so.3 -o out/stubs/libc.so.3 out/stubs/empty.o
-$LD -soname libAppFramework.A.so -o out/stubs/libAppFramework.A.so out/stubs/fw.o
-$LD -soname libCoreFramework.A.so -o out/stubs/libCoreFramework.A.so out/stubs/empty.o
+"${LD[@]}" -soname libc.so.3 -o out/stubs/libc.so.3 out/stubs/empty.o
+"${LD[@]}" -soname libAppFramework.A.so -o out/stubs/libAppFramework.A.so out/stubs/fw.o
+"${LD[@]}" -soname libCoreFramework.A.so -o out/stubs/libCoreFramework.A.so out/stubs/empty.o
 LIBS=(-Lout/stubs -l:libc.so.3)
 
 # link the plugin
-$LD -soname libCarPlayMenu.so -o $OUT/libCarPlayMenu.so out/cpm.o -Lout/stubs -l:libAppFramework.A.so -l:libCoreFramework.A.so $LIBS
+"${LD[@]}" -soname libCarPlayMenu.so -o $OUT/libCarPlayMenu.so out/cpm.o -Lout/stubs -l:libAppFramework.A.so -l:libCoreFramework.A.so "${LIBS[@]}"
 # the HUD-only menu (the turn-by-turn-only install, --hud): the same plugin with only the HUD rows, installed as libCarPlayMenu.so /
 # CarPlayMenu.xml; its XML is the main one cut down to states 20 (two rows), 81 and 93
 clang "${CF[@]}" -I. -DCPM_HUD_ONLY -c src/cpm.cpp -o out/cpm-hud.o
-$LD -soname libCarPlayMenu.so -o $OUT/libCarPlayMenu-hud.so out/cpm-hud.o -Lout/stubs -l:libAppFramework.A.so -l:libCoreFramework.A.so $LIBS
+"${LD[@]}" -soname libCarPlayMenu.so -o $OUT/libCarPlayMenu-hud.so out/cpm-hud.o -Lout/stubs -l:libAppFramework.A.so -l:libCoreFramework.A.so "${LIBS[@]}"
 python3 - $OUT/CarPlayMenu.xml $OUT/CarPlayMenu-hud.xml <<'HUDXML'
 import re, sys
 import xml.etree.ElementTree as ET
@@ -81,17 +81,17 @@ open(dst, 'w').write(head + '<pluginApps>\n  ' + ET.tostring(app, encoding='unic
 HUDXML
 # touchpad / knob / pinch hook preloaded into Connectivity
 clang "${CF[@]}" -x c -c src/pinch.c -o out/pinch.o
-$LD -soname libcppinch.so -o $OUT/libcppinch.so out/pinch.o $LIBS
+"${LD[@]}" -soname libcppinch.so -o $OUT/libcppinch.so out/pinch.o "${LIBS[@]}"
 # "Restart to apply": reboots the head unit (LD_PRELOAD=... /bin/cat, see src/reboot.c)
 clang "${CF[@]}" -x c -c src/reboot.c -o out/reboot.o
-$LD -soname libcpreboot.so -o $OUT/libcpreboot.so out/reboot.o $LIBS
+"${LD[@]}" -soname libcpreboot.so -o $OUT/libcpreboot.so out/reboot.o "${LIBS[@]}"
 # installer probe: which cluster output the car has (Ethernet KOMBI or MOST); LD_PRELOAD=libcpprobe.so /bin/cat (see src/probe.cpp; also clears a left-over KOMBI arrow for librghook-kombi.so)
 clang "${CF[@]}" -c src/probe.cpp -o out/probe.o
-$LD -soname libcpprobe.so -o $OUT/libcpprobe.so out/probe.o $LIBS
+"${LD[@]}" -soname libcpprobe.so -o $OUT/libcpprobe.so out/probe.o "${LIBS[@]}"
 # "Add route guidance to HUD": preloaded into mm-ipod
 clang -target armv7-none-eabi -march=armv7-a -mfloat-abi=soft -ffreestanding -fPIC -Os -mno-unaligned-access \
       -Wno-incompatible-library-redeclaration -Wno-builtin-requires-header -c src/rghook.c -o out/rghook.o
-$LD -soname librghook.so -o $OUT/librghook.so out/rghook.o $LIBS
+"${LD[@]}" -soname librghook.so -o $OUT/librghook.so out/rghook.o "${LIBS[@]}"
 # ... and its variants, one of which the installer puts in place of librghook.so (same soname: the mm-ipod wrapper preloads
 # "librghook.so"): -kombi sends the guidance to an Ethernet KOMBI (src/rgkombi.cpp); -most draws it on the MOST HUDTerminal from
 # mm-ipod (src/rghud.cpp, the plugin's hud.h), for installs without the menu plugin; -both does the two. The C++ parts each keep hidden
@@ -103,7 +103,7 @@ for v in kombi most both; do
               both) D=(-DRGHOOK_KOMBI -DRGHOOK_MOST); O=(out/rgkombi.o out/rghud.o) ;; esac
   clang -target armv7-none-eabi -march=armv7-a -mfloat-abi=soft -ffreestanding -fPIC -Os -mno-unaligned-access "${D[@]}" \
         -Wno-incompatible-library-redeclaration -Wno-builtin-requires-header -c src/rghook.c -o out/rghook-$v.o
-  $LD --allow-multiple-definition -soname librghook.so -o $OUT/librghook-$v.so out/rghook-$v.o "${O[@]}" $LIBS
+  "${LD[@]}" --allow-multiple-definition -soname librghook.so -o $OUT/librghook-$v.so out/rghook-$v.o "${O[@]}" "${LIBS[@]}"
 done
 # menu texts
 python3 src/texts.py $OUT/CarPlayMenu_ALL_Texts.zip

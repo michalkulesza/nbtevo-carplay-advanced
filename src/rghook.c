@@ -130,28 +130,37 @@ static void log_text(const char *s) {
   if (logfd >= 0)
     r_write(logfd, s, strlen(s));
 }
-/* Switch debug_log in the plugin's settings folder ($RGHOOK_CFG in tests; /var may not be linked yet when mm-ipod starts): the
-   per-message lines (every route guidance message, the lanes, the control message ids) only with it. Read once. */
+/* A switch file in the plugin's settings folder ($RGHOOK_CFG in tests; /var may not be linked yet when mm-ipod starts): 1 = present. */
+static int cfg_switch(const char *name) {
+  init();
+  const char *cfg = getenv("RGHOOK_CFG");
+  for (int i = 0; i < 3; i++) {
+    const char *d = i == 0 ? cfg : i == 1 ? "/var/opt/hmi/data/rw/carplaymenu" : "/fs/sda1/opt/hmi/data/ID5/carplaymenu";
+    if (!d || !*d)
+      continue;
+    char p[192];
+    snprintf(p, sizeof p, "%s/%s", d, name);
+    int fd = r_open(p, 0);
+    if (fd >= 0) {
+      r_close(fd);
+      return 1;
+    }
+  }
+  return 0;
+}
+/* Switch debug_log: the per-message lines (every route guidance message, the lanes, the control message ids) only with it. Read once. */
 int rg_debug_log(void) {
   static volatile int on = -1;
-  if (on < 0) {
-    init();
-    const char *cfg = getenv("RGHOOK_CFG");
-    int v = 0;
-    for (int i = 0; i < 3 && !v; i++) {
-      const char *d = i == 0 ? cfg : i == 1 ? "/var/opt/hmi/data/rw/carplaymenu" : "/fs/sda1/opt/hmi/data/ID5/carplaymenu";
-      if (!d || !*d)
-        continue;
-      char p[192];
-      snprintf(p, sizeof p, "%s/debug_log", d);
-      int fd = r_open(p, 0);
-      if (fd >= 0) {
-        r_close(fd);
-        v = 1;
-      }
-    }
-    on = v;
-  }
+  if (on < 0)
+    on = cfg_switch("debug_log");
+  return on;
+}
+/* Test switch keep_start_marker: the start marker (type 11) stays shown even when the iPhone already lists the first turn after it
+   (cur_view). Read once. */
+static int keep_start_marker(void) {
+  static volatile int on = -1;
+  if (on < 0)
+    on = cfg_switch("keep_start_marker");
   return on;
 }
 static u8 checksum(const u8 *b, u32 n) {
@@ -238,13 +247,13 @@ static u32 patch_ident(const u8 *msg, u32 n, u8 *out) {
 
 /* ---------------- route guidance decode ---------------- */
 static struct {
-  u32 route_state, maneuver_state, dist, dist_units, rem, rem_units, eta, cur_idx, has_cur;
+  u32 route_state, maneuver_state, dist, dist_units, rem, rem_units, eta, cur_idx, has_cur, next_idx, has_next;
   char road[128], dest[128], dist_s[32], rem_s[32], src[64];
   struct {
     u32 used, type, dist, side, jtype, nang;
     s32 exit_angle;
     s16 ang[8];
-    char road[128], desc[128];
+    char road[128], desc[128], exit[16];
   } man[32];
   /* lane guidance: RouteGuidanceUpdate 16 LaneGuidanceIndex, 18 LaneGuidanceShowing; LaneGuidanceInformation (0x5204) sets, by index */
   u32 lane_idx, has_lane_idx, lane_show, has_lane_show;
@@ -271,23 +280,77 @@ static u32 uint_be(const u8 *p, u32 n) {
     v = v << 8 | p[n > 4 ? n - 4 + i : i];
   return v;
 } /* BE, low 32 bits */
+/* The distance in the iPhone's units, from metres (for a maneuver the iPhone sent no distance text for yet; cur_view). Units: 0 km,
+   1 mi, 2 m, 3 yd, 4 ft. Integer only (no soft-float in the car's libc): one decimal for km and mi. */
+static void fmt_dist(char *o, u32 cap, u32 m, u32 units) {
+  if (units == 1 || units == 3 || units == 4) {
+    u32 ft = (m * 3281 + 500) / 1000, yd = (m * 1094 + 500) / 1000;
+    if (units == 3 && yd < 500)
+      snprintf(o, cap, "%u yd", yd < 100 ? (yd + 5) / 10 * 10 : (yd + 25) / 50 * 50);
+    else if (units != 3 && ft < 1000)
+      snprintf(o, cap, "%u ft", ft < 100 ? (ft + 5) / 10 * 10 : (ft + 25) / 50 * 50);
+    else {
+      u32 t = (m * 10 + 804) / 1609; /* tenths of a mile, rounded */
+      snprintf(o, cap, "%u.%u mi", t / 10, t % 10);
+    }
+  } else if (m < 1000)
+    snprintf(o, cap, "%u m", m < 100 ? (m + 5) / 10 * 10 : (m + 25) / 50 * 50);
+  else {
+    u32 t = (m + 50) / 100;
+    snprintf(o, cap, "%u.%u km", t / 10, t % 10);
+  }
+}
+/* The maneuver to show and its distance (issue #9, F25 X3: "the first direction after a reroute feels missed"). After a reroute the
+   iPhone's current list (0x5201 field 13) is [0, 1]: the start marker (type 11, 0 m) and the first real turn; it moves on to [1, 2]
+   only later, so the HUD showed the start marker, sometimes twice, instead of the turn. When the current maneuver is the start
+   marker, the car is at it (30 m or less) and the iPhone already lists, and has sent, the next one, that one is shown: with its step
+   length (0x5202 field 5, from the start marker to it) as the distance, in the iPhone's units, or with the iPhone's own distance when
+   the step length is unknown. Test switch keep_start_marker: the start marker as before. Called under st_lock (or from on_rg). */
+static u32 cur_view(u32 *dist, char *ds, u32 cap) {
+  u32 x = st.cur_idx % 32, nx = st.next_idx % 32;
+  *dist = st.dist;
+  snprintf(ds, cap, "%s", st.dist_s);
+  if (!st.has_next || st.next_idx == st.cur_idx || !st.man[x].used || st.man[x].type != 11 || st.dist > 30 || !st.man[nx].used ||
+      st.man[nx].type == 11 || keep_start_marker())
+    return st.cur_idx;
+  u32 m = st.man[nx].dist;
+  if (m) {
+    *dist = m;
+    fmt_dist(ds, cap, m, st.dist_units);
+  }
+  static u32 logged = 0xffffffff;
+  if (rg_debug_log() && logged != (st.cur_idx << 16 | st.next_idx)) {
+    logged = st.cur_idx << 16 | st.next_idx;
+    char b[120];
+    snprintf(b, sizeof b, "RG start marker %u at %u m: showing maneuver %u (type %u, %u m)\n", st.cur_idx, st.dist, st.next_idx,
+             st.man[nx].type, *dist);
+    log_text(b);
+  }
+  return st.next_idx;
+}
 static void publish(void) {
   const char *p = getenv("RGHOOK_PPS");
   char tmp[160], b[2048];
   if (!p)
     p = "/var/iap/pps/routeguidance";
+  u32 cur = st.cur_idx, dist = st.dist;
+  char ds[32];
+  if (st.has_cur)
+    cur = cur_view(&dist, ds, sizeof ds);
+  else
+    snprintf(ds, sizeof ds, "%s", st.dist_s);
   int k =
       snprintf(b, sizeof b,
                "@routeguidance\nroute_state:n:%u\nmaneuver_state:n:%u\ndist_to_maneuver:n:%u\ndist_to_maneuver_units:n:%u\n"
                "dist_to_maneuver_string::%s\ndistance_remaining:n:%u\ndistance_remaining_string::%s\ncurrent_road::%s\ndestination:"
                ":%s\nsource::%s\n",
-               st.route_state, st.maneuver_state, st.dist, st.dist_units, st.dist_s, st.rem, st.rem_s, st.road, st.dest, st.src);
+               st.route_state, st.maneuver_state, dist, st.dist_units, ds, st.rem, st.rem_s, st.road, st.dest, st.src);
   if (st.has_cur) {
-    u32 x = st.cur_idx % 32;
+    u32 x = cur % 32;
     k += snprintf(b + k, sizeof b - k,
                   "maneuver_index:n:%u\nmaneuver_type:n:%u\nmaneuver_exit_angle:n:%d\nmaneuver_driving_side:n:%u\nmaneuver_road::%"
                   "s\nmaneuver_description::%s\n",
-                  st.cur_idx, st.man[x].type, st.man[x].exit_angle, st.man[x].side, st.man[x].road, st.man[x].desc);
+                  cur, st.man[x].type, st.man[x].exit_angle, st.man[x].side, st.man[x].road, st.man[x].desc);
     /* JunctionType (0 intersection, 1 roundabout) and the angles of the junction's roads, for the side roads on the HUD (hudshapes.h) */
     k += snprintf(b + k, sizeof b - k, "maneuver_junction_type:n:%u\nmaneuver_junction_angles::", st.man[x].jtype);
     for (u32 q = 0; q < st.man[x].nang && k < (int)sizeof b - 16; q++)
@@ -379,6 +442,41 @@ static void on_lanes(u32 idx, const u8 *p, u32 n) {
   if (rg_debug_log())
     log_text(b);
 }
+/* The exit number in a maneuver description ("Take exit 23B onto I-95": "23B"): the word "exit" followed by a token that starts
+   with a digit. "" when there is none ("Take the exit", "exit onto"). */
+static void exit_no(const char *d, char *o, u32 cap) {
+  o[0] = 0;
+  for (u32 i = 0; d[i]; i++) {
+    if ((d[i] | 32) != 'e' || (d[i + 1] | 32) != 'x' || (d[i + 2] | 32) != 'i' || (d[i + 3] | 32) != 't')
+      continue;
+    if (i && (((d[i - 1] | 32) >= 'a' && (d[i - 1] | 32) <= 'z') || (d[i - 1] >= '0' && d[i - 1] <= '9')))
+      continue;
+    u32 j = i + 4;
+    while (d[j] == ' ' || d[j] == '#')
+      j++;
+    if (d[j] < '0' || d[j] > '9')
+      continue;
+    u32 k = 0;
+    while (((d[j] >= '0' && d[j] <= '9') || ((d[j] | 32) >= 'a' && (d[j] | 32) <= 'z')) && k + 1 < cap)
+      o[k++] = d[j++];
+    o[k] = 0;
+    return;
+  }
+}
+/* ExitInfo text -> the exit number only ("Exit 23B" -> "23B", "23B" -> "23B"); "" when it has no digit */
+static void exit_from(char *o, u32 cap, const char *t) {
+  exit_no(t, o, cap);
+  if (o[0])
+    return;
+  while (*t == ' ' || *t == '#')
+    t++;
+  u32 k = 0;
+  while (((*t >= '0' && *t <= '9') || ((*t | 32) >= 'a' && (*t | 32) <= 'z')) && k + 1 < cap)
+    o[k++] = *t++;
+  o[k] = 0;
+  if (o[0] < '0' || o[0] > '9')
+    o[0] = 0;
+}
 static void on_rg_locked(u32 mid, const u8 *p, u32 n);
 static void kick(void) {
 #ifdef RGHOOK_KOMBI
@@ -453,10 +551,12 @@ static void on_rg_locked(u32 mid, const u8 *p, u32 n) {
         case 12:
           st.dist_units = uint_be(d, dn);
           break;
-        case 13:
+        case 13: /* ManeuverCurrentList: the maneuvers the iPhone shows now, u16 each; the first is the current one */
           if (dn >= 2) {
             st.cur_idx = be16(d);
             st.has_cur = 1;
+            st.has_next = dn >= 4;
+            st.next_idx = dn >= 4 ? be16(d + 2) : 0;
           }
           break;
         case 19:
@@ -512,6 +612,18 @@ static void on_rg_locked(u32 mid, const u8 *p, u32 n) {
           st.man[x].ang[st.man[x].nang++] = (s16)be16(d + q); /* JunctionElementAngle, one per road */
       else if (id == 8)
         st.man[x].side = uint_be(d, dn); /* DrivingSide: 0 right-hand traffic, 1 left-hand */
+      else if (id != 1 && id != 6 && id != 7 && dn >= 2 && dn <= 18 && st.man[x].exit[0] == 0) {
+        /* any other text field with a digit in it is taken as the ExitInfo the iPhone sends when SupportsExitInfo was asked for
+           ("23B", "Exit 23B"): printable, ends in NUL (binary and number fields do not) */
+        u32 q = 0, dig = 0;
+        while (q + 1 < dn && d[q] >= 0x20 && d[q] < 0x7f) {
+          if (d[q] >= '0' && d[q] <= '9')
+            dig = 1;
+          q++;
+        }
+        if (q + 1 == dn && d[q] == 0 && dig)
+          exit_from(st.man[x].exit, sizeof st.man[x].exit, (const char *)d);
+      }
       i += ln;
     }
   }
@@ -703,6 +815,11 @@ static void packet_done(void) {
     lock();
     inject_start();
     unlock();
+#ifdef RGHOOK_MOST
+    /* The MOST client starts with the CarPlay session, not with the first route message: its loop also takes the HUD test channel
+       (hud-probe, tools/hud_probe.sh) and "HUD debug log", which in a HUD-only install had no client while no route guided. */
+    rgh_kick();
+#endif
   }
 }
 static u32 scan_in(u8 *b,
@@ -824,15 +941,19 @@ int rg_view_get(struct rg_view *v) {
   u32 rs = st.route_state;
   v->hold = rs == 3 || rs == 4;
   if (have) {
-    u32 x = st.cur_idx % 32;
+    u32 dist, cur = cur_view(&dist, v->dist_s, sizeof v->dist_s), x = cur % 32; /* the start marker skipped as in publish() */
     v->active = rs == 1 || rs == 5 || rs == 6;
-    v->index = st.cur_idx;
+    v->index = cur;
     v->type = st.man[x].type;
     v->side = st.man[x].side;
     v->angle = st.man[x].exit_angle;
-    v->dist = st.dist;
+    if (st.man[x].exit[0])
+      copy_z(v->exitno, sizeof v->exitno, st.man[x].exit);
+    else
+      exit_no(st.man[x].desc, v->exitno, sizeof v->exitno);
+    v->roadfb = st.man[x].road[0] ? 0 : 1;
+    v->dist = dist;
     v->units = st.dist_units;
-    copy_z(v->dist_s, sizeof v->dist_s, st.dist_s);
     copy_z(v->road, sizeof v->road, st.man[x].road[0] ? st.man[x].road : st.road);
     if (st.has_lane_idx) { /* the lanes the iPhone shows now, as publish() writes them */
       u32 l = st.lane_idx % 8;

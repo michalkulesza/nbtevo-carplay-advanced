@@ -287,6 +287,17 @@ void *worker(void *) {
   char enabled[160];
   snprintf(enabled, sizeof enabled, "%s/hud_guidance", cfg ? cfg : kCfg);
   rg_log_line("kombi: CarPlay directions to the Ethernet KOMBI (SOME/IP 0xB006), from mm-ipod");
+  {  // test switch kombi_road_max: the street's length in characters, 8..60 (kombi.h shortRoad); read once per CarPlay session
+    char p[170], nb[16];
+    snprintf(p, sizeof p, "%s/kombi_road_max", cfg ? cfg : kCfg);
+    int n = rg_file_read(p, nb, sizeof nb);
+    u32 val = 0;
+    for (int q = 0; q < n && q < 3 && nb[q] >= '0' && nb[q] <= '9'; q++)
+      val = val * 10 + (u32)(nb[q] - '0');
+    kombi::g_roadMax = val >= 8 && val <= 60 ? val : 0;
+    if (kombi::g_roadMax)
+      logLine("kombi: street at most %s%d characters (kombi_road_max)", "", (int)val);
+  }
   char mine[16];
   snprintf(mine, sizeof mine, "%d\n", (int)getpid());
   char old[16];

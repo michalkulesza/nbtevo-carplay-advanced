@@ -21,6 +21,7 @@
     <raAction id="96" />
     <raAction id="97" />
     <raAction id="98" />
+    <raAction id="108" />
   </actions>
   <models>
     <textIdModel id="10" textId="1">
@@ -56,6 +57,10 @@
     <raBoolModel id="99" />
     <raBoolModel id="100" />
     <raBoolModel id="101" />
+    <raBoolModel id="109" />
+    <textIdModel id="110" textId="25">
+      <synonyms />
+    </textIdModel>
   </models>
   <events />
   <hmiStates>
@@ -70,6 +75,7 @@
         <checkbox action="84" id="87" model="85" text="" textModel="86" />
         <checkbox action="88" id="91" model="89" text="" textModel="90" />
         <button action="92" id="95" model="94" text="" />
+        <checkbox action="108" id="111" model="109" text="" textModel="110" />
       </components>
     </hmiState>
     <hmiState id="93" text="Effect colour" textModel="94">

@@ -10,7 +10,10 @@
 #   204 [inst u16][00|01]                SetVisibility
 # Needs: the plugin installed with "CarPlay directions in HUD" on (its MOST client runs the test channel), no CarPlay route active
 # (the plugin would draw over the test). BMW navigation must NOT be guiding either, except for "seen".
-# Answers and errors go to the plugin log /dev/shmem/carplaymenu.log ("HUD in ... fkt c04 op d"; op f = ErrorAck): for 10 s after
+# HUD-only installs (--hud, librghook-most.so): the MOST client lives in mm-ipod, which runs only during a CarPlay session: connect
+# the iPhone (CarPlay on screen, no route).
+# Answers and errors go to the plugin log /dev/shmem/carplaymenu.log, or /var/iap/rghook.log in a HUD-only install (chosen by the
+# plugin folder's hud_only marker; HUD_LOG=<file> overrides) ("HUD in ... fkt c04 op d"; op f = ErrorAck): for 10 s after
 # each batch even without the switch debug_log; "seen" needs it (touch /var/opt/hmi/data/rw/carplaymenu/debug_log, restart the HMI).
 #
 #   ksh hud_probe.sh sizes [first=1] [last=64]   ImageGetSize for every handle in the range, then the sizes found
@@ -24,6 +27,14 @@
 #   ksh hud_probe.sh colours [first=0] [last=31] [secs=2] [buf=6]   a filled square in the F54 picture box for each fill colour
 #                                                index (SetFillColor 21b) in turn, the index printed as it shows: which indexes are
 #                                                colours on this HUD (white 4; 10 drew nothing on the F54, car 2026-11-13)
+#   ksh hud_probe.sh text <inst> [secs=3]        SetText "123" on <inst> in the three forms (UTF-16 [00], ISO-8859-15 [01], UTF-8
+#                                                [02]), then empty again: which form, if any, this cluster takes there (op d) and
+#                                                shows (hud_text_handles moves the texts to other instances, issue #9)
+#   ksh hud_probe.sh box <x> <y> <size> [secs=8] [buf=6]   a frame (2 px edges) and a centre mark for the picture square
+#                                                (x,y)-(x+size,y+size) on the picture buffer: all four edges visible = the arrow fits
+#                                                there. Then "box ... save" writes it to the hud_box switch (issue #12; read when the
+#                                                HUD starts: reconnect the iPhone, or restart). "sizes 5 6" shows the buffer's size,
+#                                                which the plugin itself fits the box to; "box clear" removes hud_box
 #   ksh hud_probe.sh vis <inst> 0|1              SetVisibility
 #   ksh hud_probe.sh raw "<fkt> <hex>" ...       any calls, one argument each, e.g. raw "227 0035 000000ff 02"
 #   ksh hud_probe.sh seen                        what the BMW navigation itself sent to 82/00 (bar 226/227/229, steps c07/c08),
@@ -31,7 +42,10 @@
 #   ksh hud_probe.sh log [lines=40]              the last HUD lines of the plugin log
 # Handles are decimal or 0x-hex. Copy:  ssh root@<hu> 'cat > /var/hud_probe.sh' < tools/hud_probe.sh
 CMD=/dev/shmem/carplaymenu-hudcmd
-LOG=/dev/shmem/carplaymenu.log
+PLUGIN=/var/opt/hmi/data/rw/Plugins/CarPlayMenu
+if [ -n "$HUD_LOG" ]; then LOG=$HUD_LOG
+elif [ -f $PLUGIN/hud_only ]; then LOG=/var/iap/rghook.log; HUDONLY=1     # HUD-only install: the HUD runs in mm-ipod
+else LOG=/dev/shmem/carplaymenu.log; fi
 
 # plain ksh only (the head unit's ksh is pdksh-like: no printf builtin, no 0x numbers, no grep -E / tail +N assumed)
 set -A HX 0 1 2 3 4 5 6 7 8 9 a b c d e f
@@ -50,7 +64,13 @@ run() {
     sleep 1; t=t+1
     if [ $t -ge 8 ]; then
       rm -f $CMD
-      echo "the plugin did not take the calls: is \"CarPlay directions in HUD\" on, and the HMI running? ($LOG)"; exit 1
+      if [ -n "$HUDONLY" ]; then
+        echo "nothing took the calls: in a HUD-only install the HUD runs in mm-ipod, during a CarPlay session only. Is the iPhone"
+        echo "connected (CarPlay on screen) and \"CarPlay directions in HUD\" on? ($LOG)"
+      else
+        echo "the plugin did not take the calls: is \"CarPlay directions in HUD\" on, and the HMI running? ($LOG)"
+      fi
+      exit 1
     fi
   done
 }
@@ -166,6 +186,57 @@ $FLAG"; sleep $secs
   since $start | grep 'fkt 21d' | grep -v 'HUD out' | grep -v ' op 6 ' | sed -n 1,12p
   echo "Note what the HUD showed for each stage (clean / hull / spikes / nothing); a photo settles it."
   ;;
+text)
+  [ -z "$2" ] && { echo "usage: $0 text <inst> [secs]"; exit 1; }
+  typeset -i secs=${3:-3}
+  h=$(hex4 $2)
+  start=$(lines)
+  run "204 ${h}01"
+  for f in "00 UTF-16 0031003200330000" "01 ISO-8859-15 31323300" "02 UTF-8 31323300"; do
+    set -- $f
+    echo "form $1 ($2): \"123\" on 0x$h"
+    run "210 ${h}$1$3"; sleep $secs
+  done
+  run "210 ${h}000000"
+  sleep 2
+  echo "--- answers to SetText (op d = taken, op 9 / op f = refused: [inst][code][param]) ---"
+  since $start | grep 'fkt 210' | grep -v 'HUD out' | grep -v ' op 6 ' | sed -n 1,8p
+  echo "In order: UTF-16, ISO-8859-15, UTF-8, the empty UTF-16 text. Note which one the HUD showed."
+  ;;
+box)
+  CFG=/var/opt/hmi/data/rw/carplaymenu
+  if [ "$2" = clear ]; then rm -f $CFG/hud_box; echo "hud_box removed (the plugin's own box from the next HUD start)"; exit 0; fi
+  [ -z "$4" ] && { echo "usage: $0 box <x> <y> <size> [secs=8] [buf=6] | box <x> <y> <size> save | box clear"; exit 1; }
+  typeset -i x=$(num $2) y=$(num $3) s=$(num $4) secs=8 buf=6
+  if [ "$5" = save ]; then
+    print -r -- "$x $y $s" > $CFG/hud_box.tmp && mv $CFG/hud_box.tmp $CFG/hud_box
+    echo "hud_box = \"$x $y $s\" (from the next HUD start: reconnect the iPhone or restart)"; exit 0
+  fi
+  [ -n "$5" ] && secs=$5
+  [ -n "$6" ] && buf=$(num $6)
+  B=$(hex4 $buf)
+  rect() { echo "21d ${B}$(hex4 $1)0304$(hex4 $2)$(hex4 $3)$(hex4 $4)$(hex4 $3)$(hex4 $4)$(hex4 $5)$(hex4 $2)$(hex4 $5)"; }
+  typeset -i x1=x+s y1=y+s cx=x+s/2 cy=y+s/2
+  start=$(lines)
+  echo "square ($x,$y)-($x1,$y1) on buffer 0x$B for ${secs} s: are all four edges and the centre mark visible?"
+  run "204 000101
+204 ${B}01
+220 ${B}
+21b ${B}04
+219 ${B}00
+$(rect 0 $x $y $x1 $((y + 2)))
+$(rect 1 $x $((y1 - 2)) $x1 $y1)
+$(rect 2 $x $y $((x + 2)) $y1)
+$(rect 3 $((x1 - 2)) $y $x1 $y1)
+$(rect 4 $((cx - 3)) $((cy - 3)) $((cx + 3)) $((cy + 3)))"
+  sleep $secs
+  run "220 ${B}
+204 000100"
+  sleep 1
+  echo "--- answers to the polygons (op d = taken, op f / op 9 = refused) ---"
+  since $start | grep 'fkt 21d' | grep -v 'HUD out' | grep -v ' op 6 ' | sed -n 1,6p
+  echo "An edge missing = that side is outside the HUD's area: move or shrink the square. When all show: $0 box $x $y $s save"
+  ;;
 vis)
   [ -z "$3" ] && { echo "usage: $0 vis <inst> 0|1"; exit 1; }
   start=$(lines); run "204 $(hex4 $2)0$3"; sleep 2; since $start | grep 'fkt 204' | grep -v 'HUD out'
@@ -185,6 +256,6 @@ log)
   [ -f $LOG ] && grep 'CarPlayMenu: HUD' $LOG | tail -${2:-40}
   ;;
 *)
-  sed -n '2,32p' $0
+  sed -n '2,43p' $0
   ;;
 esac
