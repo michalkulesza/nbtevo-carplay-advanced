@@ -84,7 +84,8 @@ enum {
   kFBlock = 0x82,
   kInst = 0,
   kOpStartResultAck = 6,
-  kOpResultAck = 0xD
+  kOpResultAck = 0xD,
+  kImageGetSize = 0xC04
 };
 enum {
   kAudioMaster = 0x20,
@@ -99,6 +100,8 @@ volatile int g_attached, g_registered, g_lock;
 volatile u32 g_client;
 volatile u16 g_self, g_host, g_amHost;    // g_amHost: owner of AudioMaster 20/00 ("Media gestures", volume)
 volatile u32 g_navMs, g_answers, g_sent;  // last command of another client to 0x82 (BMW navigation), answers from the cluster
+volatile u16 g_surfW = 0, g_surfH = 0;     // picture surface size from an ImageGetSize reply (0 = not yet known)
+volatile int g_sizeAsked = 0, g_sizeDone = 0;
 
 u32 nowMs() {
   hud_timespec t;
@@ -303,6 +306,10 @@ void onData(void *, void *is) {
     u32 varTag = rd32(p + 4), varVal = rd32(p + 8);
     u16 fkt = rd16(p + 18);
     dbgMsg(src == g_self ? "echo" : dst == g_self ? "in  " : "seen", src, dst, fkt, op, p, len);
+    if (op == kOpResultAck && dst == g_self && fkt == kImageGetSize) {  // our ImageGetSize reply: [inst][w][h]
+      u32 dln = rd32(p + 28);
+      if (32 + dln <= len && dln >= 6) { g_surfW = rd16(p + 34); g_surfH = rd16(p + 36); }
+    }
     bool normal = varTag == 2 && !(varVal >= 4 && varVal <= 9);  // not the send status of a message of ours
     bool drawing = (fkt >= 0x200 && fkt <= 0x22B) || (fkt >= 0xC03 && fkt <= 0xC09);
     u32 dn = rd32(p + 28);
@@ -390,6 +397,8 @@ enum {
 // arrow there was visible while ours in the 6WA box was not (text was). On a MINI (its layout package is present) every point is mapped
 // to (35,15)-(85,65); the file hud_box_6wa in the settings folder keeps the 6WA box.
 bool g_boxMini;
+s16 g_bx0 = 70, g_by0 = 20, g_bx1 = 170, g_by1 = 120;   // custom picture box from hud_box_6wa (x0 y0 x1 y1); default = F20 6WA box
+bool g_boxCustom = false;
 u8 g_fillDim = 3;  // the context tone: grey (F54; 0x0A, the first choice, is transparent there); hud_mono draws everything in kFill
 // Test switches (files in the settings folder, read when the HUD starts; all off by default, the drawing without them is unchanged):
 //   hud_convex   the convex pieces of before instead of whole polygons. Whole polygons (hudshapes.h mergePieces, a few calls a picture
@@ -462,11 +471,20 @@ void chooseBox() {
     close(f);
   int o = open("/var/opt/hmi/data/rw/carplaymenu/hud_box_6wa", 0);
   if (o >= 0) {
-    close(o);
+    char t[48]; long rn = read(o, t, sizeof t - 1); close(o);
+    if (rn < 0) rn = 0; t[rn] = 0;
+    int bv[4]; u32 bn = 0;
+    for (char *q = t; *q && bn < 4;) {
+      if (*q >= '0' && *q <= '9') { int v = 0; while (*q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0'); bv[bn++] = v; }
+      else q++;
+    }
     g_boxMini = false;
+    if (bn == 4) { g_bx0 = (s16)bv[0]; g_by0 = (s16)bv[1]; g_bx1 = (s16)bv[2]; g_by1 = (s16)bv[3]; g_boxCustom = true; }
   }
   if (g_log)
-    g_log(g_boxMini ? "CarPlayMenu: HUD: picture box MINI (35,15)-(85,65)" : "CarPlayMenu: HUD: picture box 6WA (70,20)-(170,120)");
+    g_log(g_boxMini ? "CarPlayMenu: HUD: picture box MINI (35,15)-(85,65)"
+          : g_boxCustom ? "CarPlayMenu: HUD: picture box CUSTOM (hud_box_6wa x0 y0 x1 y1)"
+          : "CarPlayMenu: HUD: picture box 6WA (70,20)-(170,120)");
 }
 enum {
   hFrame = 1,
@@ -582,7 +600,11 @@ bool polygon(u16 h, u16 idx, const Pt *p, u32 k, bool whole = false) {
     k = whole ? toMiniPoly(q, k) : toMini(q, k);
     if (k < 3)
       return true;
-  }  // half size, the MINI cluster's picture area
+  } else if (g_boxCustom) {
+    k = toBox(q, k, whole, g_bx0, g_by0, g_bx1, g_by1);
+    if (k < 3)
+      return true;
+  }  // half size (MINI) or a custom cluster box (hud_box_6wa)
   static u8 d[6 + 4 * kPolyPts];
   be16(d, h);
   be16(d + 2, idx);
@@ -965,6 +987,18 @@ void *worker(void *) {
     if (!g_registered || !g_host)
       continue;
     runCmds();
+    if (!g_boxCustom && !g_sizeAsked) {              // auto-detect the picture box (a hud_box_6wa file still wins)
+      g_sizeAsked = 1;
+      u8 qd[2]; be16(qd, hBufA);
+      call(kImageGetSize, qd, 2);                    // ImageGetSize(inst 5); reply -> g_surfW/g_surfH
+    }
+    if (!g_boxCustom && !g_sizeDone && g_surfH) {     // reply arrived: choose the box once
+      g_sizeDone = 1;
+      if (g_surfW == 126 && g_surfH == 77) {          // F30 6WA (BMW): 126x77 picture surface
+        g_bx0 = 31; g_by0 = 6; g_bx1 = 95; g_by1 = 70; g_boxCustom = true;
+        if (g_log) g_log("CarPlayMenu: HUD: auto picture box F30 6WA (126x77) -> (31,6)-(95,70)");
+      }  // else: unknown surface -> keep the F20 6WA default (70,20)-(170,120)
+    }
     if (kombi)
       continue;
     bool nav = g_navMs && nowMs() - g_navMs < 5000;  // the BMW navigation uses the terminal: it has priority
