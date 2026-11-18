@@ -960,5 +960,14 @@ inline u32 toMiniPoly(Pt *p, u32 k) {
   }
   return tidy(p, k);
 }
+// Map the authoring box (70,20)-(170,120) into an arbitrary box (x0,y0)-(x1,y1); for clusters whose picture
+// surface differs from the F20 6WA one (e.g. F30 6WA = 126x77). whole: raw polygon (tidy), else convex pieces (hull).
+inline u32 toBox(Pt *p, u32 k, bool whole, int x0, int y0, int x1, int y1) {
+  for (u32 i = 0; i < k; i++) {
+    p[i].x = (s16)(x0 + (int)(p[i].x - 70) * (x1 - x0) / 100);
+    p[i].y = (s16)(y0 + (int)(p[i].y - 20) * (y1 - y0) / 100);
+  }
+  return whole ? tidy(p, k) : hull(p, k);
+}
 
 }  // namespace hud
